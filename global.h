@@ -413,6 +413,7 @@ void msip_msg_data_init(pj_pool_t*& pool, const pjsua_acc_id& acc_id, pjsua_msg_
 bool msip_call_in_progress();
 bool msip_call_audio_allowed(const pjsua_call_info& call_info);
 void msip_release_idle_microphone();
+bool msip_microphone_released();
 void msip_set_sound_device(int outDev, bool forse = false, bool outOnly = false);
 bool msip_call_statistics(call_user_data* user_data, float* MOS);
 void msip_call_dial_dtmf(pjsua_call_id call_id, CString digits, bool silent = false);

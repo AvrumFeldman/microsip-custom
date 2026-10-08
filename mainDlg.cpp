@@ -62,6 +62,31 @@
 
 CmainDlg* mainDlg;
 
+// Called before PJSIP creates its physical sound stream, including opens made
+// on worker threads. The guard handshake never calls back into PJSIP or the UI.
+static pj_status_t on_snd_dev_operation(int operation)
+{
+    if (operation != 1 || !mainDlg ||
+        (pjsua_var.snd_mode & PJSUA_SND_DEV_SPEAKER_ONLY) ||
+        pjsua_var.cap_dev == PJSUA_SND_NULL_DEV || pjsua_var.cap_dev == PJSUA_SND_NO_DEV ||
+        pjsua_var.play_dev == PJSUA_SND_NULL_DEV || pjsua_var.play_dev == PJSUA_SND_NO_DEV)
+        return PJ_SUCCESS;
+
+    std::wstring input = L"Unknown capture endpoint", output = L"Unknown playback endpoint";
+    pjmedia_aud_dev_info info;
+    if (pjmedia_aud_dev_get_info(pjsua_var.cap_dev, &info) == PJ_SUCCESS &&
+        !pj_ansi_stricmp(info.driver, "WMME"))
+        input = MSIP::AnsiToWideChar(info.name).GetString();
+    if (pjmedia_aud_dev_get_info(pjsua_var.play_dev, &info) == PJ_SUCCESS &&
+        !pj_ansi_stricmp(info.driver, "WMME"))
+        output = MSIP::AnsiToWideChar(info.name).GetString();
+    if (!mainDlg->audioFocus.PrepareCapture(input, output)) {
+        InterlockedExchange(&mainDlg->audioFocusPrepareFailed, TRUE);
+        PJ_LOG(2, (THIS_FILENAME, "Call audio guard preparation failed"));
+    }
+    return PJ_SUCCESS;
+}
+
 static UINT WM_SHELLHOOKMESSAGE;
 static UINT WM_TASKBARRESTARTMESSAGE;
 
@@ -1797,6 +1822,7 @@ BEGIN_MESSAGE_MAP(CmainDlg, CBaseDialog)
     ON_COMMAND(ID_UPDATES, OnCheckUpdates)
     ON_MESSAGE(UM_UPDATE_CHECKER_LOADED, OnUpdateCheckerLoaded)
     ON_COMMAND(ID_SETTINGS, OnMenuSettings)
+    ON_COMMAND(ID_RESTORE_OTHER_AUDIO, OnRestoreOtherAudio)
     ON_COMMAND(ID_SHORTCUTS, OnMenuShortcuts)
     ON_COMMAND(ID_ALWAYS_ON_TOP, OnMenuAlwaysOnTop)
     ON_COMMAND(ID_MENU_EXPORT, OnMenuExport)
@@ -2625,6 +2651,9 @@ void CmainDlg::MainPopupMenu(bool isMenuButton)
                     str = Translate(_T("Settings"));
                     str.Append(_T("\tCtrl+P"));
                     tracker->AppendMenu(MF_STRING, ID_SETTINGS, str);
+        if (audioFocus.IsRecovering()) {
+            tracker->AppendMenu(MF_STRING, ID_RESTORE_OTHER_AUDIO, _T("Restore other audio now"));
+        }
         tracker->AppendMenu(MF_SEPARATOR);
         str = Translate(_T("Shortcuts"));
         str.Append(_T("\tCtrl+S"));
@@ -3071,15 +3100,31 @@ void CmainDlg::OnTimerVersion()
 
 void CmainDlg::UpdateAudioFocus()
 {
+    const auto generation = audioFocus.CaptureGeneration();
     msip_release_idle_microphone();
     const bool active = msip_call_in_progress();
-    if (!audioFocus.Update(active, accountSettings.callAudioMode,
-        std::wstring(accountSettings.callAudioApps.GetString())) && !audioFocusErrorShown) {
+    const bool updated = audioFocus.Update(active, accountSettings.callAudioMode,
+        std::wstring(accountSettings.callAudioApps.GetString()), msip_microphone_released(), generation);
+    const bool preparationFailed = InterlockedExchange(&audioFocusPrepareFailed, FALSE) != FALSE;
+    if ((!updated || preparationFailed) && !audioFocusErrorShown) {
         audioFocusErrorShown = true;
         BaloonPopup(_T("Call audio"),
-            _T("Could not start audio muting. Keep MicroSIPAudioGuard.exe beside microsip.exe."), NIIF_WARNING);
+            _T("Could not prepare audio muting. Keep the matching MicroSIPAudioGuard.exe beside microsip.exe."), NIIF_WARNING);
+    } else if (updated && !preparationFailed) {
+        audioFocusErrorShown = false;
     }
-    if (!active) audioFocusErrorShown = false;
+    if (!active && audioFocus.RecoveryUnknown() && !audioRecoveryNoticeShown) {
+        audioRecoveryNoticeShown = true;
+        BaloonPopup(_T("Other audio is still muted"),
+            _T("Waiting for confirmation that Bluetooth call audio has closed. You can choose Restore other audio now from the menu."), NIIF_INFO);
+    }
+    if (!audioFocus.IsRecovering()) audioRecoveryNoticeShown = false;
+}
+
+void CmainDlg::OnRestoreOtherAudio()
+{
+    audioFocus.RestoreNow();
+    audioRecoveryNoticeShown = false;
 }
 
 void CmainDlg::OnTimer(UINT_PTR TimerVal)
@@ -3192,6 +3237,10 @@ void CmainDlg::OnTimer(UINT_PTR TimerVal)
 
 void CmainDlg::PJCreate()
 {
+    // Subscribe before any call can open a microphone. Idle observation does
+    // not mute sessions or open an audio stream.
+    audioFocus.Update(false, accountSettings.callAudioMode,
+        std::wstring(accountSettings.callAudioApps.GetString()), true);
     while (!is_pjsua_running()) {
         statistics.pjCreateTime = CTime::GetCurrentTime().GetTime();
         PJCreateRaw();
@@ -3331,6 +3380,7 @@ void CmainDlg::PJCreateRaw()
 
     ua_cfg.cb.on_call_redirected = &on_call_redirected;
 
+    ua_cfg.cb.on_snd_dev_operation = &on_snd_dev_operation;
     ua_cfg.cb.on_call_media_state = &on_call_media_state;
     ua_cfg.cb.on_call_media_event = &on_call_media_event;
     ua_cfg.cb.on_incoming_call = &on_incoming_call;
@@ -3740,8 +3790,10 @@ void CmainDlg::UpdateSoundDevicesIds()
 
 void CmainDlg::PJDestroy(bool exit)
 {
-    audioFocus.Stop();
     if (!is_pjsua_running()) {
+        audioFocus.Update(false, accountSettings.callAudioMode,
+            std::wstring(accountSettings.callAudioApps.GetString()), true);
+        if (exit) audioFocus.Stop();
         return;
     }
     statistics.pjDestroyTime = CTime::GetCurrentTime().GetTime();
@@ -3803,6 +3855,11 @@ void CmainDlg::PJDestroy(bool exit)
     g_bRunning = false;
     statistics.pjDestroyTime2 = CTime::GetCurrentTime().GetTime();
     pjsua_destroy();
+    // Physical capture is now closed. The guard independently waits for the
+    // headset's SCO disconnect; process shutdown must not bypass that gate.
+    audioFocus.Update(false, accountSettings.callAudioMode,
+        std::wstring(accountSettings.callAudioApps.GetString()), true);
+    if (exit) audioFocus.Stop();
     statistics.pjDestroyTime3 = CTime::GetCurrentTime().GetTime();
 
     if (!exit) {

@@ -60,6 +60,9 @@ public:
     void UpdateAudioFocus();
     AudioFocus audioFocus;
     bool audioFocusErrorShown = false;
+    bool audioRecoveryNoticeShown = false;
+    volatile LONG audioFocusPrepareFailed = FALSE;
+    void OnRestoreOtherAudio();
 
     // Dialog Data
     enum { IDD = IDD_MAIN };

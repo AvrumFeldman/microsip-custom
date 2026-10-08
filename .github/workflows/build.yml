@@ -28,12 +28,12 @@ jobs:
       - name: Build voice-only custom version
         shell: pwsh
         run: ./build-custom.ps1 -BuildRoot "$env:RUNNER_TEMP/microsip-build"
-      - name: Build and run XML and dial-plan regression tests
+      - name: Build and run hardware-independent regression tests
         shell: pwsh
         run: |
           $vswhere = "${env:ProgramFiles(x86)}/Microsoft Visual Studio/Installer/vswhere.exe"
           $vs = & $vswhere -latest -products '*' -requires Microsoft.VisualStudio.Component.VC.ATLMFC -property installationPath
-          foreach ($test in @('MarkupTests', 'DialPlanTests')) {
+          foreach ($test in @('MarkupTests', 'DialPlanTests', 'BluetoothRecoveryTests')) {
             & "$vs/MSBuild/Current/Bin/MSBuild.exe" "tests/$test.vcxproj" /p:Configuration=Release /p:Platform=Win32 /v:minimal /nologo
             if ($LASTEXITCODE) { throw "$test build failed." }
             & "./out/$test.exe"

@@ -517,6 +517,23 @@ void msip_release_idle_microphone()
     }
 }
 
+bool msip_microphone_released()
+{
+    if (!is_pjsua_running()) return true;
+    // Inspect the actual stream under PJSIP's lock. A configured playback-only
+    // mode is not enough while a previous duplex stream is still closing.
+    bool released = true;
+    PJSUA_LOCK();
+    if (pjsua_var.snd_port) {
+        pjmedia_aud_stream* stream = pjmedia_snd_port_get_snd_stream(pjsua_var.snd_port);
+        pjmedia_aud_param params;
+        released = stream && pjmedia_aud_stream_get_param(stream, &params) == PJ_SUCCESS &&
+            !(params.dir & PJMEDIA_DIR_CAPTURE);
+    }
+    PJSUA_UNLOCK();
+    return released;
+}
+
 void msip_set_sound_device(int outDev, bool forse, bool outOnly) {
     if (!is_pjsua_running()) {
         return;

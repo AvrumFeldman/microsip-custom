@@ -1,4 +1,4 @@
-MicroSIP Custom 3.22.16.3 - Windows voice calls
+MicroSIP Custom 3.22.16.4 - Windows voice calls
 ============================================
 
 This is an independently maintained fork, not an official MicroSIP release.
@@ -31,12 +31,24 @@ For selected apps use names such as Spotify.exe; vlc.exe, or Add app...
 Matching is case-insensitive. A browser name affects the whole browser.
 
 Muting begins when dialing an outgoing call or answering an incoming call,
-continues through hold/overlapping calls, and ends after the final call.
+and continues through hold/overlapping calls. After the final call, capture
+closes first; Bluetooth Classic call audio must then report its actual SCO
+disconnect before music resumes. There is no fixed unmute delay or list of
+supported headset models. Devices are discovered dynamically through Windows.
 Apps already muted stay muted; volume levels are unchanged. A manual unmute
-during the call takes precedence for that session until the next call.
-New audio sessions are detected every 200 ms. MicroSIP and system sounds
-are excluded. The audio guard restores music if MicroSIP crashes/exits;
-it cannot restore if the guard itself is killed or Windows audio fails.
+during the call or recovery takes precedence, including a later manual re-mute.
+Only mutes applied by MicroSIP are restored. A new call during recovery keeps
+the existing mute ownership without briefly restoring music. Helpers from
+restarted copies also coordinate their holds.
+New audio sessions are detected periodically. MicroSIP and system sounds
+are excluded. The audio guard keeps the same checks if MicroSIP crashes/exits.
+Unknown transport state keeps audio muted. Menu > Restore other audio now
+explicitly restores MicroSIP-owned mutes; the guard also provides restoration
+after the main app exits. Unresolved devices and LE Audio require manual
+restoration. Wired/USB audio restore after capture closes. A wireless dongle
+exposing only USB audio hides its internal profile state, so this build cannot
+wait for that internal transition. The guard cannot restore if it is itself
+killed or Windows audio fails.
 Exclusive-mode players may not follow Windows session mute controls.
 
 Calls
@@ -79,8 +91,10 @@ an unused message-box helper was removed. Original upstream authorship
 and applicable license notices are preserved.
 
 Regression tests use synthetic local SIP calls, silent Windows render
-sessions and account-free test data. Real headset Bluetooth switching and
-provider/PBX transfer compatibility still require a check on your setup.
+sessions and account-free test data. A hardware check confirmed that the Windows
+observer waited for an actual SCO disconnect after capture closed. Other driver
+and headset combinations, audio quality, and provider/PBX compatibility still
+require a check on your setup.
 See README.md for build commands, test prerequisites and detailed behavior.
 
 License and sources

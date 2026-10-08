@@ -31,11 +31,23 @@ class ProcessEntry(c.Structure):
                 ('parent', w.DWORD), ('priority', w.LONG), ('flags', w.DWORD),
                 ('exe', w.WCHAR * 260)]
 
+class AudioStatus(c.Structure):
+    # Read-only diagnostics from audio/AudioGuardProtocol.h. The helper stays
+    # alive while idle, so its process lifetime is not evidence of muting.
+    _fields_ = [('version', w.LONG), ('state', w.LONG),
+                ('capture_released', w.LONG), ('observer_available', w.LONG),
+                ('parent', w.LONG)]
+
 kernel.CreateToolhelp32Snapshot.argtypes = [w.DWORD, w.DWORD]
 kernel.CreateToolhelp32Snapshot.restype = w.HANDLE
 kernel.Process32FirstW.argtypes = [w.HANDLE, c.POINTER(ProcessEntry)]
 kernel.Process32NextW.argtypes = [w.HANDLE, c.POINTER(ProcessEntry)]
 kernel.CloseHandle.argtypes = [w.HANDLE]
+kernel.OpenFileMappingW.argtypes = [w.DWORD, w.BOOL, w.LPCWSTR]
+kernel.OpenFileMappingW.restype = w.HANDLE
+kernel.MapViewOfFile.argtypes = [w.HANDLE, w.DWORD, w.DWORD, w.DWORD, c.c_size_t]
+kernel.MapViewOfFile.restype = c.c_void_p
+kernel.UnmapViewOfFile.argtypes = [c.c_void_p]
 pid = int(sys.argv[1])
 log_path = pathlib.Path(sys.argv[2])
 windows = []
@@ -59,19 +71,42 @@ def command(text):
     data = CopyData(1, c.sizeof(buffer), c.cast(buffer, c.c_void_p))
     user.SendMessageW(window, 0x4a, 0, c.addressof(data))
 
-def guard_running():
+def audio_states():
     snapshot = kernel.CreateToolhelp32Snapshot(2, 0)
     entry = ProcessEntry()
     entry.size = c.sizeof(entry)
     try:
+        states = []
         valid = kernel.Process32FirstW(snapshot, c.byref(entry))
         while valid:
             if entry.parent == pid and entry.exe.lower() == 'microsipaudioguard.exe':
-                return True
+                mapping = kernel.OpenFileMappingW(4, False, f'Local\\MicroSIPAudioGuard.Status.{entry.pid}')
+                if not mapping:
+                    states.append(-1)  # helper is starting; do not claim restoration
+                else:
+                    try:
+                        view = kernel.MapViewOfFile(mapping, 4, 0, 0, c.sizeof(AudioStatus))
+                        if not view:
+                            states.append(-1)
+                        else:
+                            try:
+                                status = AudioStatus.from_buffer_copy(c.string_at(view, c.sizeof(AudioStatus)))
+                                assert status.version == 1 and status.parent == pid, 'unexpected audio status protocol'
+                                states.append(status.state)
+                            finally:
+                                kernel.UnmapViewOfFile(view)
+                    finally:
+                        kernel.CloseHandle(mapping)
             valid = kernel.Process32NextW(snapshot, c.byref(entry))
-        return False
+        return states
     finally:
         kernel.CloseHandle(snapshot)
+
+def audio_muted():
+    return any(state in (1, 2, 3) for state in audio_states())
+
+def audio_restored():
+    return all(state == 0 for state in audio_states())
 
 def eventually(predicate, message, timeout=5):
     end = time.monotonic() + timeout
@@ -208,7 +243,7 @@ try:
         incoming, incoming_id, incoming_from = incoming_call()
         incoming_response(incoming_id, 180)
         time.sleep(.3)
-        assert not guard_running(), 'unanswered hunt-group ringing started muting'
+        assert audio_restored(), 'unanswered incoming ringing started muting'
         assert 'WMME capture stream started' not in log()[baseline:], 'unanswered hunt-group ringing opened microphone'
         cancel_incoming(incoming, incoming_id)
     print('PASS: repeated incoming SDP/ringing/CANCEL leaves capture closed, including first sound after startup', flush=True)
@@ -219,13 +254,13 @@ try:
     assert log().rfind('Opening sound device (speaker only)') > log().rfind('Opening sound device (speaker + mic)'), 'keypad did not use playback-only sound'
     assert 'Sound recorder' not in log()[baseline:]
     assert 'capture stream started' not in log()[baseline:]
-    assert not guard_running(), 'keypad started muting other apps'
-    print('PASS: keypad tone uses speaker-only mode, no microphone or mute guard', flush=True)
+    assert audio_restored(), 'keypad started muting other apps'
+    print('PASS: keypad tone uses speaker-only mode, no microphone or app muting', flush=True)
 
     command(f'sip:peer@127.0.0.1:{port}')
     invite, address = receive('INVITE', new_dialog=True)
     response(invite, address, 180, 'Ringing')
-    eventually(guard_running, 'outgoing call did not start mute guard')
+    eventually(audio_muted, 'outgoing call did not start muting')
     response(invite, address, 200, 'OK', sdp)
     receive('ACK')
     pump(.4)
@@ -236,28 +271,29 @@ try:
     assert 'mode=1' not in log()[during:], 'in-call digit downgraded the microphone'
     command('msip:hold')
     pump(.6)
-    assert guard_running(), 'hold released muting'
+    assert audio_muted(), 'hold released muting'
     command('msip:hold')
     pump(.6)
-    assert guard_running(), 'resume released muting'
+    assert audio_muted(), 'resume released muting'
     command('/hangupall')
     bye, address = receive('BYE')
-    # Leave BYE unanswered first: local hangup must restore music immediately,
-    # without waiting for a remote peer's acknowledgment or SIP timeout.
-    eventually(lambda: not guard_running(), 'unacknowledged local hangup kept music muted', timeout=2)
+    # Leave BYE unanswered first: local hangup must close capture immediately.
+    # Music restoration follows actual transport recovery, independently of
+    # this SIP acknowledgment. This is a test deadline, not a release delay.
     eventually(microphone_closed, 'unacknowledged local hangup kept microphone open', timeout=2)
+    eventually(audio_restored, 'unacknowledged local hangup did not finish audio recovery', timeout=15)
     response(bye, address, 200, 'OK')
-    eventually(lambda: not guard_running(), 'hangup did not restore other audio')
+    eventually(audio_restored, 'hangup did not restore other audio', timeout=15)
     eventually(lambda: 'Stopped WMME capture stream' in log()[baseline:], 'microphone not released')
     print('PASS: outgoing answer, microphone transition, DTMF, hold/resume, unacknowledged hangup', flush=True)
 
     command(f'sip:peer@127.0.0.1:{port}')
     invite, address = receive('INVITE', new_dialog=True)
-    eventually(guard_running, 'failed call test guard not started')
+    eventually(audio_muted, 'failed call test did not start muting')
     response(invite, address, 486, 'Busy Here')
     receive('ACK')
-    eventually(lambda: not guard_running(), 'busy response did not restore other audio')
-    print('PASS: rejected outgoing call releases mute guard', flush=True)
+    eventually(audio_restored, 'busy response did not restore other audio', timeout=15)
+    print('PASS: rejected outgoing call releases app muting', flush=True)
 
     command(f'sip:first@127.0.0.1:{port}')
     first, first_address = receive('INVITE', new_dialog=True)
@@ -271,10 +307,10 @@ try:
     pump(.4)
     remote_bye(second, second_address)
     pump(.4)
-    assert guard_running(), 'ending one overlapping call restored music too early'
+    assert audio_muted(), 'ending one overlapping call restored music too early'
     command('/hangupall')
     pump(.4)
-    eventually(lambda: not guard_running(), 'last overlapping call did not restore audio')
+    eventually(audio_restored, 'last overlapping call did not restore audio', timeout=15)
     print('PASS: overlapping calls retain muting until the last call ends', flush=True)
     eventually(microphone_closed, 'microphone not released after overlapping calls')
 
@@ -282,7 +318,7 @@ try:
     incoming, incoming_id, incoming_from = incoming_call()
     ringing, incoming_address = incoming_response(incoming_id, 180)
     time.sleep(.3)
-    assert not guard_running(), 'unanswered incoming call started muting'
+    assert audio_restored(), 'unanswered incoming call started muting'
     assert 'WMME capture stream started' not in log()[incoming_baseline:], 'ringing opened microphone'
     command('/answer')
     answered, incoming_address = incoming_response(incoming_id, 200)
@@ -291,11 +327,11 @@ try:
            f'From: {incoming_from}\r\nTo: {header(answered, "To")}\r\n'
            f'Call-ID: {incoming_id}\r\nCSeq: 1 ACK\r\nMax-Forwards: 70\r\nContent-Length: 0\r\n\r\n')
     peer.sendto(ack.encode(), incoming_address)
-    eventually(guard_running, 'answered incoming call did not start muting')
+    eventually(audio_muted, 'answered incoming call did not start muting')
     eventually(lambda: 'WMME capture stream started' in log()[incoming_baseline:], 'incoming answer did not open microphone')
     command('/hangupall')
     pump(.4)
-    eventually(lambda: not guard_running(), 'incoming hangup did not restore audio')
+    eventually(audio_restored, 'incoming hangup did not restore audio', timeout=15)
     eventually(microphone_closed, 'incoming hangup kept microphone open', timeout=2)
     print('PASS: incoming ringing leaves microphone closed; answer/hangup activate and release audio', flush=True)
 
@@ -306,11 +342,11 @@ try:
     pump(.4)
     incoming, incoming_id, incoming_from = incoming_call()
     incoming_response(incoming_id, 180)
-    assert guard_running(), 'call waiting interrupted active-call muting'
+    assert audio_muted(), 'call waiting interrupted active-call muting'
     command('/hangupall')
     bye, active_address = receive('BYE')
     eventually(microphone_closed, 'pending BYE plus ringing call retained microphone', timeout=2)
-    eventually(lambda: not guard_running(), 'unanswered call waiting retained music muting', timeout=2)
+    eventually(audio_restored, 'unanswered call waiting retained music muting after audio recovery', timeout=15)
     response(bye, active_address, 200, 'OK')
     cancel_incoming(incoming, incoming_id)
     print('PASS: last answered call releases capture while another unanswered call is still ringing', flush=True)

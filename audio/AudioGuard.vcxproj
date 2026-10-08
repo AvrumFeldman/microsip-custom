@@ -10,8 +10,8 @@
   <PropertyGroup><OutDir>$(MSBuildThisFileDirectory)..\out\</OutDir><IntDir>$(MSBuildThisFileDirectory)..\build\guard\</IntDir><TargetName>MicroSIPAudioGuard</TargetName><LinkIncremental>false</LinkIncremental></PropertyGroup>
   <ItemDefinitionGroup>
     <ClCompile><LanguageStandard>stdcpp17</LanguageStandard><RuntimeLibrary>MultiThreaded</RuntimeLibrary><Optimization>MaxSpeed</Optimization><ExceptionHandling>Sync</ExceptionHandling><WarningLevel>Level4</WarningLevel><PreprocessorDefinitions>WIN32;_WIN32_WINNT=0x0601;%(PreprocessorDefinitions)</PreprocessorDefinitions></ClCompile>
-    <Link><SubSystem>Console</SubSystem><AdditionalOptions>/PDBALTPATH:MicroSIPAudioGuard.pdb %(AdditionalOptions)</AdditionalOptions></Link>
+    <Link><SubSystem>Console</SubSystem><AdditionalOptions>/PDBALTPATH:MicroSIPAudioGuard.pdb %(AdditionalOptions)</AdditionalOptions><AdditionalDependencies>Bthprops.lib;Winmm.lib;Cfgmgr32.lib;Ole32.lib;Uuid.lib;User32.lib;%(AdditionalDependencies)</AdditionalDependencies></Link>
   </ItemDefinitionGroup>
-  <ItemGroup><ClCompile Include="AudioGuard.cpp" /></ItemGroup>
+  <ItemGroup><ClCompile Include="AudioGuard.cpp" /><ClCompile Include="BluetoothRecovery.cpp" /></ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
 </Project>
