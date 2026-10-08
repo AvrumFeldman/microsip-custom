@@ -249,6 +249,15 @@ void Transfer::SetAction(msip_action action, pjsua_call_id call_id)
 {
 	this->action = action;
 	callId = call_id;
+	if (callId == PJSUA_INVALID_ID && action != MSIP_ACTION_FORWARD) {
+		callId = mainDlg->CurrentCallId();
+	}
+	callDialog.Empty();
+	pjsua_call_info info;
+	if (is_pjsua_running() && callId != PJSUA_INVALID_ID &&
+		pjsua_call_get_info(callId, &info) == PJ_SUCCESS) {
+		callDialog = MSIP::PjToStr(&info.call_id);
+	}
 	bool buttons = false;
 	if (action == MSIP_ACTION_TRANSFER || action == MSIP_ACTION_ATTENDED_TRANSFER || action == MSIP_ACTION_FORWARD) {
 		if (buttons || action == MSIP_ACTION_FORWARD) {
@@ -284,6 +293,16 @@ bool Transfer::Action(msip_action action)
 		number = *(CString*)combobox->GetItemData(i);
 	}
 	if (!number.IsEmpty()) {
+		// Incoming call waiting can change the selected tab while this
+		// modeless dialog is open. Keep the action on its original SIP dialog.
+		pjsua_call_info info;
+		if (!is_pjsua_running() || callId == PJSUA_INVALID_ID || callDialog.IsEmpty() ||
+			!pjsua_call_is_active(callId) || pjsua_call_get_info(callId, &info) != PJ_SUCCESS ||
+			MSIP::PjToStr(&info.call_id) != callDialog) {
+			mainDlg->BaloonPopup(Translate(_T("Call Transfer")),
+				Translate(_T("The original call is no longer available.")), NIIF_INFO);
+			return false;
+		}
 		return mainDlg->messagesDlg->CallAction(action, number, callId);
 	}
 	return false;

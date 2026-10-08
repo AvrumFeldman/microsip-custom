@@ -1,9 +1,10 @@
-MicroSIP Custom 3.22.16.2 - Windows voice calls
+MicroSIP Custom 3.22.16.3 - Windows voice calls
 ============================================
 
 This is an independently maintained fork, not an official MicroSIP release.
 Download/update: https://github.com/AvrumFeldman/microsip-custom/releases
 Source and public PRs: https://github.com/AvrumFeldman/microsip-custom
+PRs are welcome and appreciated, including AI-assisted and AI-generated ones.
 
 Start
 -----
@@ -46,9 +47,16 @@ Choose the participant to remove; only that conference leg is disconnected.
 Transfer's dropdown offers Blind Transfer and Attended Transfer (consult
 first). For attended transfer enter the destination and confirm, speak to
 the destination, then select Complete attended transfer. Cancel consultation
-and return resumes the original held call. PBX/provider support for SIP
+and return resumes the original held call. End also cancels a consultation,
+even while ringing. Calls routed back to the same account have separate
+Answer/Decline controls and preserve the original held call when answered.
+PBX/provider support for SIP
 REFER with Replaces is required. Existing PBX feature-code settings remain
 available.
+
+A forced process termination cannot send SIP hangup messages. The remote
+call may remain until the other party hangs up or the PBX detects the lost
+session. The audio guard restores Windows audio, not SIP calls.
 
 Build differences and validation
 --------------------------------

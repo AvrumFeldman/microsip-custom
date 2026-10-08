@@ -377,14 +377,22 @@ MessagesContact* MessagesDlg::AddTab(CString address, BOOL activate, pjsua_call_
 
     int nCallId = -1;
     int nNumber = -1;
+    CString dialog = call_info ? MSIP::PjToStr(&call_info->call_id) : CString();
     for (int i = 0; i < m_messagesTab.GetItemCount(); i++)
     {
         MessagesContact* pMessagesContact = GetMessageContact(i);
-        if (call_info && call_info->id != -1 && call_info->id == pMessagesContact->callId) {
+        bool sameCall = call_info && call_info->id != -1 &&
+            call_info->id == pMessagesContact->callId &&
+            (pMessagesContact->callIdStr.IsEmpty() || pMessagesContact->callIdStr == dialog);
+        if (sameCall) {
             nCallId = i;
             messagesContact = pMessagesContact;
         }
-        if (pMessagesContact->aor == aor) {
+        // A loopback call (or two calls from the same extension) has distinct
+        // SIP dialogs even when both remote addresses are identical. Reuse
+        // an address-only tab only when it has no other live call attached.
+        if (pMessagesContact->aor == aor &&
+            (!call_info || pMessagesContact->callId == PJSUA_INVALID_ID || sameCall)) {
             nNumber = i;
             if (nCallId == -1) {
                 messagesContact = pMessagesContact;
@@ -398,8 +406,7 @@ MessagesContact* MessagesDlg::AddTab(CString address, BOOL activate, pjsua_call_
         if (nCallId != -1) {
             exists = nCallId;
             if (nNumber != -1 && nNumber != nCallId) {
-                CloseTab(nNumber);
-                if (nNumber < nCallId) {
+                if (CloseTab(nNumber, TRUE) && nNumber < nCallId) {
                     exists--;
                 }
             }
@@ -412,9 +419,6 @@ MessagesContact* MessagesDlg::AddTab(CString address, BOOL activate, pjsua_call_
         if (call_info) {
             if (messagesContact->callId != -1) {
                 if (messagesContact->callId != call_info->id) {
-                    if (call_info->role == PJSIP_ROLE_UAS && (call_info->state == PJSIP_INV_STATE_INCOMING || call_info->state == PJSIP_INV_STATE_EARLY)) {
-                        mainDlg->PostMessage(UM_CALL_ANSWER, (WPARAM)call_info->id, -486);
-                    }
                     return NULL;
                 }
             }
@@ -723,9 +727,13 @@ pjsua_call_id MessagesDlg::PerformCall(CString number, bool hasVideo, pj_status_
                     call_user_data* user_data_curr = (call_user_data*)pjsua_call_get_user_data(call_ids[i]);
                     if (user_data_curr) {
                         user_data_curr->CS.Lock();
-                        if (user_data_curr->inConference) {
+                        bool inConference = user_data_curr->inConference;
+                        user_data_curr->CS.Unlock();
+                        if (inConference) {
                             pjsua_call_info call_info_curr;
-                            pjsua_call_get_info(call_ids[i], &call_info_curr);
+                            if (pjsua_call_get_info(call_ids[i], &call_info_curr) != PJ_SUCCESS) {
+                                continue;
+                            }
                             pj_str_t hvalue, hname;
                             hname = pj_str("X-Conf-Call-ID");
                             hvalue = call_info_curr.call_id;
@@ -735,7 +743,6 @@ pjsua_call_id MessagesDlg::PerformCall(CString number, bool hasVideo, pj_status_
                             pjsip_generic_string_hdr* hdr = pjsip_generic_string_hdr_create(pool, &hname, &hvalue);
                             pj_list_push_back(&msg_data.hdr_list, hdr);
                         }
-                        user_data_curr->CS.Unlock();
                     }
                 }
             }
@@ -877,9 +884,10 @@ void MessagesDlg::OnBnClickedCallEnd()
 
 void MessagesDlg::OnEndCall(pjsua_call_info* call_info, call_user_data* user_data)
 {
+    CString endedDialog = MSIP::PjToStr(&call_info->call_id);
     // Local hangup reaches here before the SIP BYE transaction finishes, too.
     // Return to the original caller as soon as a consultation ends or fails.
-    if (call_info->id == transferConsultation) {
+    if (call_info->id == transferConsultation && endedDialog == transferConsultationDialog) {
         if (transferCompleting) {
             // A successful Replaces can end this old leg before the final
             // REFER NOTIFY arrives. Keep the original caller held until the
@@ -891,7 +899,7 @@ void MessagesDlg::OnEndCall(pjsua_call_info* call_info, call_user_data* user_dat
             ResumeTransferSource();
         }
     }
-    else if (call_info->id == transferSource) {
+    else if (call_info->id == transferSource && endedDialog == transferSourceDialog) {
         ClearAttendedTransfer();
     }
     SIPURI sipuri;
@@ -955,7 +963,8 @@ void MessagesDlg::OnEndCall(pjsua_call_info* call_info, call_user_data* user_dat
     {
         messagesContact = GetMessageContact(i);
         messagesContactNum = i;
-        if (messagesContact->callId == call_info->id)
+        if (messagesContact->callId == call_info->id &&
+            (messagesContact->callIdStr.IsEmpty() || messagesContact->callIdStr == endedDialog))
         {
             lastCall = messagesContact;
             messagesContact->callId = -1;
@@ -1027,16 +1036,15 @@ void MessagesDlg::OnEndCall(pjsua_call_info* call_info, call_user_data* user_dat
     msip_conference_leave(call_info, user_data);
 
     if (user_data) {
-        user_data->CS.Lock();
         msip_call_recording_stop(user_data);
         /* Cancel duration timer, if any */
-        if (user_data->auto_hangup_timer.id != PJSUA_INVALID_ID) {
-            if (is_pjsua_running()) {
-                pjsua_cancel_timer(&user_data->auto_hangup_timer);
-            }
-            user_data->auto_hangup_timer.id = PJSUA_INVALID_ID;
-        }
+        user_data->CS.Lock();
+        bool cancelTimer = user_data->auto_hangup_timer.id != PJSUA_INVALID_ID;
+        user_data->auto_hangup_timer.id = PJSUA_INVALID_ID;
         user_data->CS.Unlock();
+        if (cancelTimer && is_pjsua_running()) {
+            pjsua_cancel_timer(&user_data->auto_hangup_timer);
+        }
     }
     msip_call_deinit_tonegen(call_info->id, user_data);
 
@@ -1159,10 +1167,10 @@ void MessagesDlg::UpdateCallButton(BOOL active, pjsua_call_info* call_info, call
 void MessagesDlg::UpdateHoldButton(pjsua_call_info* call_info)
 {
     MessagesContact* messagesContact = GetMessageContact();
-    if (!messagesContact) {
+    if (!messagesContact && !HasAttendedTransfer()) {
         return;
     }
-    bool hasActions = false;
+    bool hasActions = HasAttendedTransfer();
     bool hasHold = false;
     bool onHold = false;
     CButton* buttonTransfer = (CButton*)GetDlgItem(IDC_TRANSFER);
@@ -1170,7 +1178,7 @@ void MessagesDlg::UpdateHoldButton(pjsua_call_info* call_info)
     CButton* buttonHold = (CButton*)GetDlgItem(IDC_HOLD);
     CButton* buttonHoldDialer = (CButton*)mainDlg->pageDialer->GetDlgItem(IDC_HOLD);
     CButton* buttonTransferDialer = (CButton*)mainDlg->pageDialer->GetDlgItem(IDC_TRANSFER);
-    if (messagesContact->callId != -1 && call_info) {
+    if (messagesContact && messagesContact->callId != -1 && call_info) {
         if (messagesContact->callId != call_info->id) {
             return;
         }
@@ -1585,11 +1593,11 @@ void MessagesDlg::Separate(pjsua_call_id call_id)
     msip_call_unhold(&call_info);
 }
 
-bool MessagesDlg::CallAction(int action, CString number, pjsua_call_id forward_call_id)
+bool MessagesDlg::CallAction(int action, CString number, pjsua_call_id action_call_id)
 {
     number.Trim();
     if (action == MSIP_ACTION_FORWARD) {
-        if (forward_call_id != PJSUA_INVALID_ID) {
+        if (action_call_id != PJSUA_INVALID_ID) {
             if (number.IsEmpty()) {
                 number = accountSettings.forwardingNumber;
             }
@@ -1606,14 +1614,14 @@ bool MessagesDlg::CallAction(int action, CString number, pjsua_call_id forward_c
                 pjsip_generic_string_hdr_init2(&subject, &hname, &hvalue);
                 pj_list_push_back(&msg_data.hdr_list, &subject);
                 pjsua_call_info call_info;
-                if (pjsua_call_get_info(forward_call_id, &call_info) == PJ_SUCCESS) {
+                if (pjsua_call_get_info(action_call_id, &call_info) == PJ_SUCCESS) {
                     pjsip_generic_string_hdr diversion;
                     hname = pj_str("Diversion");
                     hvalue = call_info.local_info;
                     pjsip_generic_string_hdr_init2(&diversion, &hname, &hvalue);
                     pj_list_push_back(&msg_data.hdr_list, &diversion);
                 }
-                pj_status_t status = pjsua_call_answer(forward_call_id, 302, NULL, &msg_data);
+                pj_status_t status = pjsua_call_answer(action_call_id, 302, NULL, &msg_data);
                 free(buf);
                 if (status == PJ_SUCCESS) {
                     return true;
@@ -1624,6 +1632,22 @@ bool MessagesDlg::CallAction(int action, CString number, pjsua_call_id forward_c
     }
     if (!number.IsEmpty()) {
         MessagesContact* messagesContactSelected = mainDlg->messagesDlg->GetMessageContact();
+        if (action_call_id != PJSUA_INVALID_ID) {
+            messagesContactSelected = nullptr;
+            pjsua_call_info actionInfo;
+            if (!is_pjsua_running() || pjsua_call_get_info(action_call_id, &actionInfo) != PJ_SUCCESS) {
+                return false;
+            }
+            CString actionDialog = MSIP::PjToStr(&actionInfo.call_id);
+            for (int i = 0; i < m_messagesTab.GetItemCount(); ++i) {
+                MessagesContact* contact = GetMessageContact(i);
+                if (contact && contact->callId == action_call_id &&
+                    (contact->callIdStr.IsEmpty() || contact->callIdStr == actionDialog)) {
+                    messagesContactSelected = contact;
+                    break;
+                }
+            }
+        }
         if (!messagesContactSelected || messagesContactSelected->callId == -1) {
             return false;
         }
@@ -1749,13 +1773,14 @@ void MessagesDlg::OnBnClickedTransfer()
         return;
     }
     MessagesContact* contact = GetMessageContact();
-    pjsua_call_info info;
-    if (!contact || contact->callId == PJSUA_INVALID_ID ||
-        pjsua_call_get_info(contact->callId, &info) != PJ_SUCCESS) {
+    pjsua_call_info info = {};
+    bool currentCall = contact && contact->callId != PJSUA_INVALID_ID &&
+        pjsua_call_get_info(contact->callId, &info) == PJ_SUCCESS;
+    if (!currentCall && !HasAttendedTransfer()) {
         return;
     }
     bool conference = false;
-    call_user_data* data = (call_user_data*)pjsua_call_get_user_data(info.id);
+    call_user_data* data = currentCall ? (call_user_data*)pjsua_call_get_user_data(info.id) : nullptr;
     if (data) {
         data->CS.Lock();
         conference = data->inConference;
@@ -2009,6 +2034,18 @@ void MessagesDlg::OnCancelAttendedTransfer()
     if (transferSource != PJSUA_INVALID_ID) {
         ResumeTransferSource();
     }
+}
+
+bool MessagesDlg::HandleConsultationEnd()
+{
+    if (!HasAttendedTransfer() || transferCompleting) {
+        return false;
+    }
+    // An incoming call can become the selected tab while consultation is
+    // ringing. End must still cancel that outgoing consultation and return
+    // to the original caller, rather than act on whichever tab arrived last.
+    OnCancelAttendedTransfer();
+    return true;
 }
 
 void MessagesDlg::OnAttendedTransferResult(pjsua_call_id call_id, int status)
@@ -2290,6 +2327,9 @@ void MessagesDlg::OnDisconnect()
 
 void MessagesDlg::OnBnClickedEnd()
 {
+    if (HandleConsultationEnd()) {
+        return;
+    }
     MessagesContact* messagesContact = GetMessageContact();
     if (!messagesContact || messagesContact->callId == -1) {
         return;

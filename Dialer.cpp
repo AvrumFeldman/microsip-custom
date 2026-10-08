@@ -1349,6 +1349,9 @@ void Dialer::OnTransferDropdown(NMHDR* header, LRESULT* result)
 
 void Dialer::OnBnClickedEnd()
 {
+    if (mainDlg->messagesDlg->HandleConsultationEnd()) {
+        return;
+    }
     MessagesContact* messagesContact = mainDlg->messagesDlg->GetMessageContact();
     if (messagesContact && messagesContact->callId != -1) {
         msip_call_end(messagesContact->callId);
@@ -1691,13 +1694,14 @@ void Dialer::OnBnClickedRec()
         call_user_data* user_data = (call_user_data*)pjsua_call_get_user_data(messagesContact->callId);
         if (user_data) {
             user_data->CS.Lock();
-            if (user_data->recorder_id == PJSUA_INVALID_ID) {
+            bool recording = user_data->recorder_id != PJSUA_INVALID_ID;
+            user_data->CS.Unlock();
+            if (!recording) {
                 msip_call_recording_start(user_data);
             }
             else {
                 msip_call_recording_stop(user_data, 0, true);
             }
-            user_data->CS.Unlock();
             mainDlg->messagesDlg->UpdateRecButton(user_data);
         }
     }

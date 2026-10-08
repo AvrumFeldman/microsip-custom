@@ -32,6 +32,16 @@ user.GetMenuStringW.argtypes = [w.HMENU, w.UINT, w.LPWSTR, c.c_int, w.UINT]
 user.GetMenuItemRect.argtypes = [w.HWND, w.HMENU, w.UINT, c.POINTER(w.RECT)]
 user.ScreenToClient.argtypes = [w.HWND, c.POINTER(w.POINT)]
 pid = int(sys.argv[1])
+user.SendMessageTimeoutW.argtypes = [w.HWND, w.UINT, w.WPARAM, w.LPARAM,
+                                    w.UINT, w.UINT, c.POINTER(c.c_size_t)]
+user.SendMessageTimeoutW.restype = w.LPARAM
+
+
+def send(hwnd, message, wparam=0, lparam=0):
+    result = c.c_size_t()
+    if not user.SendMessageTimeoutW(hwnd, message, wparam, lparam, 3, 2000, c.byref(result)):
+        raise TimeoutError(f'Test window stopped responding to message {message:#x}')
+    return w.LPARAM(result.value).value
 
 
 class CopyData(c.Structure):
@@ -81,11 +91,11 @@ dialer = next(hwnd for hwnd in windows() if user.GetDlgItem(hwnd, 1011)
 def command(value):
     buf = c.create_unicode_buffer(value)
     data = CopyData(1, c.sizeof(buf), c.cast(buf, c.c_void_p))
-    user.SendMessageW(main, 0x4a, 0, c.addressof(data))
+    send(main, 0x4a, 0, c.addressof(data))
 
 
 def action(value):
-    user.SendMessageW(messages, 0x111, value, 0)
+    send(messages, 0x111, value, 0)
 
 
 def find_dialog(title):
@@ -96,15 +106,15 @@ def destination(action_id, title, number):
     action(action_id)
     dlg = eventually(lambda: find_dialog(title), title)
     buf = c.create_unicode_buffer(number)
-    user.SendMessageW(user.GetDlgItem(dlg, 1078), 0x0c, 0, c.addressof(buf))
-    user.SendMessageW(dlg, 0x111, 1, 0)
+    send(user.GetDlgItem(dlg, 1078), 0x0c, 0, c.addressof(buf))
+    send(dlg, 0x111, 1, 0)
 
 
 def popup_menus():
     menus = []
     for hwnd in windows():
         if text(hwnd, True) == '#32768':
-            menu = user.SendMessageW(hwnd, 0x1e1, 0, 0)  # MN_GETHMENU
+            menu = send(hwnd, 0x1e1, 0, 0)  # MN_GETHMENU
             labels = []
             for index in range(user.GetMenuItemCount(menu)):
                 buf = c.create_unicode_buffer(512)
@@ -225,151 +235,156 @@ def remote_bye(invite, address):
     peer.sendto(packet.encode(), address)
 
 
-try:
-    original, address = establish('original')
-    expected_title = f'original@127.0.0.1:{port} \u2013 original'
-    assert text(messages) == expected_title, f'Conversation title Unicode mismatch: {ascii(text(messages))}'
-    user.PostMessageW(dialer, 0x111, 1135, 0)
-    menu = eventually(lambda: next((m for m in popup_menus() if 'Blind Transfer' in m[2]), None), 'Transfer dropdown')
-    assert any('Attended Transfer' in label for label in menu[2])
-    click_menu(menu, 1)
-    dlg = eventually(lambda: find_dialog('Attended Transfer'), 'Attended dialog')
-    buf = c.create_unicode_buffer(f'sip:consult@127.0.0.1:{port}')
-    user.SendMessageW(user.GetDlgItem(dlg, 1078), 0x0c, 0, c.addressof(buf))
-    user.SendMessageW(dlg, 0x111, 1, 0)
-    hold, address = receive('INVITE')
-    assert header(hold, 'Call-ID') == header(original, 'Call-ID')
-    # A consultation cannot start while the original caller is still unheld.
-    peer.settimeout(.4)
+def run_tests():
     try:
-        while True:
-            pending = peer.recvfrom(65535)[0].decode(errors='replace')
-            assert not pending.startswith('INVITE sip:consult'), 'consultation started before hold acknowledgment'
-    except socket.timeout:
-        pass
+        original, address = establish('original')
+        expected_title = f'original@127.0.0.1:{port} \u2013 original'
+        assert text(messages) == expected_title, f'Conversation title Unicode mismatch: {ascii(text(messages))}'
+        user.PostMessageW(dialer, 0x111, 1135, 0)
+        menu = eventually(lambda: next((m for m in popup_menus() if 'Blind Transfer' in m[2]), None), 'Transfer dropdown')
+        assert any('Attended Transfer' in label for label in menu[2])
+        click_menu(menu, 1)
+        dlg = eventually(lambda: find_dialog('Attended Transfer'), 'Attended dialog')
+        buf = c.create_unicode_buffer(f'sip:consult@127.0.0.1:{port}')
+        send(user.GetDlgItem(dlg, 1078), 0x0c, 0, c.addressof(buf))
+        send(dlg, 0x111, 1, 0)
+        hold, address = receive('INVITE')
+        assert header(hold, 'Call-ID') == header(original, 'Call-ID')
+        # A consultation cannot start while the original caller is still unheld.
+        peer.settimeout(.4)
+        try:
+            while True:
+                pending = peer.recvfrom(65535)[0].decode(errors='replace')
+                assert not pending.startswith('INVITE sip:consult'), 'consultation started before hold acknowledgment'
+        except socket.timeout:
+            pass
+        finally:
+            peer.settimeout(5)
+        response(hold, address, body=sdp)
+        consult, consult_address = receive('INVITE', fresh=True)
+        assert consult.startswith(f'INVITE sip:consult@127.0.0.1:{port} ')
+        response(consult, consult_address, body=sdp)
+        receive('ACK')
+        pump(.4)
+        action(32825)  # cancel consultation and resume original
+        results = pump(.8)
+        assert any(r.startswith('BYE ') and header(r, 'Call-ID') == header(consult, 'Call-ID') for r in results)
+        assert any(r.startswith('INVITE ') and header(r, 'Call-ID') == header(original, 'Call-ID') for r in results)
+        assert not any(r.startswith('BYE ') and header(r, 'Call-ID') == header(original, 'Call-ID') for r in results)
+        print('PASS: transfer dropdown, single-call consultation waits for hold; cancel resumes original', flush=True)
+
+        destination(32793, 'Attended Transfer', f'sip:cancel-pending@127.0.0.1:{port}')
+        hold, hold_address = receive('INVITE')
+        action(32825)
+        response(hold, hold_address, body=sdp)
+        results = pump(.8)
+        assert not any(r.startswith('INVITE sip:cancel-pending') for r in results)
+        assert any(r.startswith('INVITE ') and header(r, 'Call-ID') == header(original, 'Call-ID') for r in results)
+        print('PASS: cancel while hold is pending waits for acknowledgment, resumes, and never dials', flush=True)
+
+        destination(32793, 'Attended Transfer', f'sip:busy@127.0.0.1:{port}')
+        failed, failed_address = receive('INVITE', fresh=True)
+        response(failed, failed_address, 486, 'Busy Here')
+        receive('ACK')
+        results = pump(.8)
+        assert any(r.startswith('INVITE ') and header(r, 'Call-ID') == header(original, 'Call-ID') for r in results)
+        assert not any(r.startswith('BYE ') for r in results)
+        print('PASS: failed consultation automatically resumes the original caller', flush=True)
+
+        destination(32793, 'Attended Transfer', f'sip:early-bye-failure@127.0.0.1:{port}')
+        consult, consult_address = receive('INVITE', fresh=True)
+        response(consult, consult_address, body=sdp)
+        receive('ACK')
+        pump(.4)
+        action(32824)
+        refer, refer_address = receive('REFER')
+        response(refer, refer_address, 202, 'Accepted')
+        remote_bye(consult, consult_address)
+        results = pump(.5)
+        assert not any(r.startswith(('INVITE ', 'BYE ')) and header(r, 'Call-ID') == header(original, 'Call-ID') for r in results), 'early consultation BYE changed source before transfer result'
+        notify_transfer(refer, refer_address, '503 Service Unavailable')
+        results = pump(.8)
+        assert any(r.startswith('INVITE ') and header(r, 'Call-ID') == header(original, 'Call-ID') for r in results), 'failed transfer did not resume source after consultation ended'
+        assert not any(r.startswith('BYE ') for r in results)
+        print('PASS: consultation BYE before failed REFER result keeps source held, then resumes it', flush=True)
+
+        destination(32793, 'Attended Transfer', f'sip:complete@127.0.0.1:{port}')
+        consult, consult_address = receive('INVITE', fresh=True)
+        response(consult, consult_address, body=sdp)
+        receive('ACK')
+        pump(.4)
+        action(32824)
+        refer, refer_address = receive('REFER')
+        assert header(refer, 'Call-ID') == header(original, 'Call-ID')
+        assert 'Replaces=' in header(refer, 'Refer-To')
+        response(refer, refer_address, 403, 'Forbidden')
+        assert not any(r.startswith('BYE ') for r in pump(.7)), 'rejected transfer ended a call'
+        action(32824)  # a failed REFER can be retried without losing either call
+        refer, refer_address = receive('REFER')
+        response(refer, refer_address, 202, 'Accepted')
+        remote_bye(consult, consult_address)
+        results = pump(.5)
+        assert not any(r.startswith(('INVITE ', 'BYE ')) and header(r, 'Call-ID') == header(original, 'Call-ID') for r in results), 'early consultation BYE changed source before transfer result'
+        notify_transfer(refer, refer_address, '200 OK')
+        results = pump(1.2)
+        ended = {header(r, 'Call-ID') for r in results if r.startswith('BYE ')}
+        assert header(original, 'Call-ID') in ended, ended
+        assert not any(r.startswith('INVITE ') and header(r, 'Call-ID') == header(original, 'Call-ID') for r in results)
+        print('PASS: REFER with Replaces succeeds after early consultation BYE and disconnects source without resuming', flush=True)
+
+        original, address = establish('ordinary-complete')
+        destination(32793, 'Attended Transfer', f'sip:ordinary-consult@127.0.0.1:{port}')
+        consult, consult_address = receive('INVITE', fresh=True)
+        response(consult, consult_address, body=sdp)
+        receive('ACK')
+        pump(.4)
+        action(32824)
+        refer, refer_address = receive('REFER')
+        response(refer, refer_address, 202, 'Accepted')
+        notify_transfer(refer, refer_address, '200 OK')
+        results = pump(.8)
+        ended = {header(r, 'Call-ID') for r in results if r.startswith('BYE ')}
+        assert header(original, 'Call-ID') in ended and header(consult, 'Call-ID') in ended, ended
+        print('PASS: ordinary successful attended transfer closes both local legs', flush=True)
+
+        original, address = establish('conference-original')
+        destination(32794, 'Invite to Conference', f'sip:conference-added@127.0.0.1:{port}')
+        added, added_address = receive('INVITE', fresh=True)
+        response(added, added_address, body=sdp)
+        receive('ACK')
+        pump(.5)
+        user.PostMessageW(dialer, 0x111, 1011, 0)
+        menu = eventually(lambda: next((m for m in popup_menus() if 'Remove participant' in m[2]), None), 'Conference menu')
+        click_menu(menu, 1)
+        participants = eventually(lambda: next((m for m in popup_menus() if 'conference-original' in m[2]), None), 'Participants submenu')
+        assert len(participants[2]) == 2, participants[2]
+        click_menu(participants, participants[2].index('conference-original'))
+        bye, bye_address = receive('BYE')
+        assert header(bye, 'Call-ID') == header(original, 'Call-ID')
+        response(bye, bye_address)
+        assert not any(r.startswith('BYE ') for r in pump(.5)), 'remaining participant was also disconnected'
+        command('/hangupall')
+        bye, bye_address = receive('BYE')
+        assert header(bye, 'Call-ID') == header(added, 'Call-ID')
+        response(bye, bye_address)
+        print('PASS: single-call conference menu removes only the selected participant', flush=True)
+
+        pump(.4)
+        original, address = establish('blind-original')
+        destination(32792, 'Blind Transfer', f'sip:blind-target@127.0.0.1:{port}')
+        refer, refer_address = receive('REFER')
+        assert 'Replaces=' not in header(refer, 'Refer-To')
+        assert f'blind-target@127.0.0.1:{port}' in header(refer, 'Refer-To')
+        response(refer, refer_address, 202, 'Accepted')
+        notify_transfer(refer, refer_address, '200 OK')
+        results = pump(.8)
+        assert any(r.startswith('BYE ') and header(r, 'Call-ID') == header(original, 'Call-ID') for r in results)
+        print('PASS: blind transfer retains full destination URI and uses plain REFER', flush=True)
     finally:
-        peer.settimeout(5)
-    response(hold, address, body=sdp)
-    consult, consult_address = receive('INVITE', fresh=True)
-    assert consult.startswith(f'INVITE sip:consult@127.0.0.1:{port} ')
-    response(consult, consult_address, body=sdp)
-    receive('ACK')
-    pump(.4)
-    action(32825)  # cancel consultation and resume original
-    results = pump(.8)
-    assert any(r.startswith('BYE ') and header(r, 'Call-ID') == header(consult, 'Call-ID') for r in results)
-    assert any(r.startswith('INVITE ') and header(r, 'Call-ID') == header(original, 'Call-ID') for r in results)
-    assert not any(r.startswith('BYE ') and header(r, 'Call-ID') == header(original, 'Call-ID') for r in results)
-    print('PASS: transfer dropdown, single-call consultation waits for hold; cancel resumes original', flush=True)
+        command('/hangupall')
+        peer.close()
+        rtp.close()
 
-    destination(32793, 'Attended Transfer', f'sip:cancel-pending@127.0.0.1:{port}')
-    hold, hold_address = receive('INVITE')
-    action(32825)
-    response(hold, hold_address, body=sdp)
-    results = pump(.8)
-    assert not any(r.startswith('INVITE sip:cancel-pending') for r in results)
-    assert any(r.startswith('INVITE ') and header(r, 'Call-ID') == header(original, 'Call-ID') for r in results)
-    print('PASS: cancel while hold is pending waits for acknowledgment, resumes, and never dials', flush=True)
 
-    destination(32793, 'Attended Transfer', f'sip:busy@127.0.0.1:{port}')
-    failed, failed_address = receive('INVITE', fresh=True)
-    response(failed, failed_address, 486, 'Busy Here')
-    receive('ACK')
-    results = pump(.8)
-    assert any(r.startswith('INVITE ') and header(r, 'Call-ID') == header(original, 'Call-ID') for r in results)
-    assert not any(r.startswith('BYE ') for r in results)
-    print('PASS: failed consultation automatically resumes the original caller', flush=True)
-
-    destination(32793, 'Attended Transfer', f'sip:early-bye-failure@127.0.0.1:{port}')
-    consult, consult_address = receive('INVITE', fresh=True)
-    response(consult, consult_address, body=sdp)
-    receive('ACK')
-    pump(.4)
-    action(32824)
-    refer, refer_address = receive('REFER')
-    response(refer, refer_address, 202, 'Accepted')
-    remote_bye(consult, consult_address)
-    results = pump(.5)
-    assert not any(r.startswith(('INVITE ', 'BYE ')) and header(r, 'Call-ID') == header(original, 'Call-ID') for r in results), 'early consultation BYE changed source before transfer result'
-    notify_transfer(refer, refer_address, '503 Service Unavailable')
-    results = pump(.8)
-    assert any(r.startswith('INVITE ') and header(r, 'Call-ID') == header(original, 'Call-ID') for r in results), 'failed transfer did not resume source after consultation ended'
-    assert not any(r.startswith('BYE ') for r in results)
-    print('PASS: consultation BYE before failed REFER result keeps source held, then resumes it', flush=True)
-
-    destination(32793, 'Attended Transfer', f'sip:complete@127.0.0.1:{port}')
-    consult, consult_address = receive('INVITE', fresh=True)
-    response(consult, consult_address, body=sdp)
-    receive('ACK')
-    pump(.4)
-    action(32824)
-    refer, refer_address = receive('REFER')
-    assert header(refer, 'Call-ID') == header(original, 'Call-ID')
-    assert 'Replaces=' in header(refer, 'Refer-To')
-    response(refer, refer_address, 403, 'Forbidden')
-    assert not any(r.startswith('BYE ') for r in pump(.7)), 'rejected transfer ended a call'
-    action(32824)  # a failed REFER can be retried without losing either call
-    refer, refer_address = receive('REFER')
-    response(refer, refer_address, 202, 'Accepted')
-    remote_bye(consult, consult_address)
-    results = pump(.5)
-    assert not any(r.startswith(('INVITE ', 'BYE ')) and header(r, 'Call-ID') == header(original, 'Call-ID') for r in results), 'early consultation BYE changed source before transfer result'
-    notify_transfer(refer, refer_address, '200 OK')
-    results = pump(1.2)
-    ended = {header(r, 'Call-ID') for r in results if r.startswith('BYE ')}
-    assert header(original, 'Call-ID') in ended, ended
-    assert not any(r.startswith('INVITE ') and header(r, 'Call-ID') == header(original, 'Call-ID') for r in results)
-    print('PASS: REFER with Replaces succeeds after early consultation BYE and disconnects source without resuming', flush=True)
-
-    original, address = establish('ordinary-complete')
-    destination(32793, 'Attended Transfer', f'sip:ordinary-consult@127.0.0.1:{port}')
-    consult, consult_address = receive('INVITE', fresh=True)
-    response(consult, consult_address, body=sdp)
-    receive('ACK')
-    pump(.4)
-    action(32824)
-    refer, refer_address = receive('REFER')
-    response(refer, refer_address, 202, 'Accepted')
-    notify_transfer(refer, refer_address, '200 OK')
-    results = pump(.8)
-    ended = {header(r, 'Call-ID') for r in results if r.startswith('BYE ')}
-    assert header(original, 'Call-ID') in ended and header(consult, 'Call-ID') in ended, ended
-    print('PASS: ordinary successful attended transfer closes both local legs', flush=True)
-
-    original, address = establish('conference-original')
-    destination(32794, 'Invite to Conference', f'sip:conference-added@127.0.0.1:{port}')
-    added, added_address = receive('INVITE', fresh=True)
-    response(added, added_address, body=sdp)
-    receive('ACK')
-    pump(.5)
-    user.PostMessageW(dialer, 0x111, 1011, 0)
-    menu = eventually(lambda: next((m for m in popup_menus() if 'Remove participant' in m[2]), None), 'Conference menu')
-    click_menu(menu, 1)
-    participants = eventually(lambda: next((m for m in popup_menus() if 'conference-original' in m[2]), None), 'Participants submenu')
-    assert len(participants[2]) == 2, participants[2]
-    click_menu(participants, participants[2].index('conference-original'))
-    bye, bye_address = receive('BYE')
-    assert header(bye, 'Call-ID') == header(original, 'Call-ID')
-    response(bye, bye_address)
-    assert not any(r.startswith('BYE ') for r in pump(.5)), 'remaining participant was also disconnected'
-    command('/hangupall')
-    bye, bye_address = receive('BYE')
-    assert header(bye, 'Call-ID') == header(added, 'Call-ID')
-    response(bye, bye_address)
-    print('PASS: single-call conference menu removes only the selected participant', flush=True)
-
-    pump(.4)
-    original, address = establish('blind-original')
-    destination(32792, 'Blind Transfer', f'sip:blind-target@127.0.0.1:{port}')
-    refer, refer_address = receive('REFER')
-    assert 'Replaces=' not in header(refer, 'Refer-To')
-    assert f'blind-target@127.0.0.1:{port}' in header(refer, 'Refer-To')
-    response(refer, refer_address, 202, 'Accepted')
-    notify_transfer(refer, refer_address, '200 OK')
-    results = pump(.8)
-    assert any(r.startswith('BYE ') and header(r, 'Call-ID') == header(original, 'Call-ID') for r in results)
-    print('PASS: blind transfer retains full destination URI and uses plain REFER', flush=True)
-finally:
-    command('/hangupall')
-    peer.close()
-    rtp.close()
+if __name__ == '__main__':
+    run_tests()

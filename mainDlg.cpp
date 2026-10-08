@@ -231,20 +231,10 @@ static void on_call_state(pjsua_call_id call_id, pjsip_event* e)
         else if (user_data->call_id != call_info->id) {
             callIdMissmatch = true;
         }
-        bool hidden = user_data->hidden;
         user_data->CS.Unlock();
         if (callIdMissmatch) {
             user_data = new call_user_data(call_info->id);
             pjsua_call_set_user_data(call_info->id, user_data);
-        }
-        else {
-            if (hidden) {
-                if (call_info->state == PJSIP_INV_STATE_DISCONNECTED) {
-                    pjsua_call_set_user_data(call_info->id, NULL);
-                    delete user_data;
-                }
-                return;
-            }
         }
     }
     if (!user_data) {
@@ -252,35 +242,9 @@ static void on_call_state(pjsua_call_id call_id, pjsip_event* e)
         pjsua_call_set_user_data(call_info->id, user_data);
     }
 
-    user_data->CS.Lock();
-
-    switch (call_info->state) {
-    case PJSIP_INV_STATE_CALLING:
-        msip_call_unhold(call_info);
-        break;
-    case PJSIP_INV_STATE_CONNECTING:
-        msip_call_unhold(call_info);
-        break;
-    case PJSIP_INV_STATE_CONFIRMED:
-        if (accountSettings.autoRecording) {
-            msip_call_recording_start(user_data, call_info);
-        }
-        if (accountSettings.autoHangUpTime > 0) {
-            /* Schedule timer to hangup call after the specified duration */
-            pj_time_val delay;
-            user_data->auto_hangup_timer.id = call_info->id;
-            user_data->auto_hangup_timer.cb = &call_timeout_callback;
-            delay.sec = accountSettings.autoHangUpTime;
-            delay.msec = 0;
-            pjsua_schedule_timer(&user_data->auto_hangup_timer, &delay);
-        }
-        break;
-    case PJSIP_INV_STATE_DISCONNECTED:
+    if (call_info->state == PJSIP_INV_STATE_DISCONNECTED) {
         pjsua_call_set_user_data(call_info->id, NULL);
-        break;
     }
-
-    user_data->CS.Unlock();
 
     statistics.postCallState = 1;
     statistics.postCallState0 = 0;
@@ -309,11 +273,41 @@ LRESULT CmainDlg::onCallState(WPARAM wParam, LPARAM lParam)
     pjsua_call_info* call_info = (pjsua_call_info*)wParam;
     call_user_data* user_data = (call_user_data*)lParam;
 
+    // Rejected incoming calls stay invisible. The UI owns queued state data:
+    // never free it in a worker while earlier notifications are still pending.
+    user_data->CS.Lock();
+    bool hidden = user_data->hidden;
+    user_data->CS.Unlock();
+    if (hidden) {
+        if (call_info->state == PJSIP_INV_STATE_DISCONNECTED) delete user_data;
+        delete call_info;
+        return 0;
+    }
+
     SIPURI sipuri;
     ParseCallSIPURI(call_info, user_data, sipuri);
     CString number = (!sipuri.user.IsEmpty() ? sipuri.user + _T("@") : _T("")) + sipuri.domain;
 
-    user_data->CS.Lock();
+    // Never hold call data while acquiring PJSIP locks or changing other calls.
+    // The worker callback runs under PJSIP locks, so cross-call work belongs here.
+    if (call_info->state == PJSIP_INV_STATE_CALLING || call_info->state == PJSIP_INV_STATE_CONNECTING) {
+        pjsua_call_info current;
+        if (pjsua_call_get_info(call_info->id, &current) == PJ_SUCCESS &&
+            MSIP::PjToStr(&current.call_id) == MSIP::PjToStr(&call_info->call_id) &&
+            current.state != PJSIP_INV_STATE_DISCONNECTED) {
+            msip_call_unhold(&current);
+        }
+    }
+    if (call_info->state == PJSIP_INV_STATE_CONFIRMED &&
+        pjsua_call_get_user_data(call_info->id) == user_data) {
+        if (accountSettings.autoRecording) msip_call_recording_start(user_data, call_info);
+        if (accountSettings.autoHangUpTime > 0) {
+            pj_time_val delay = { accountSettings.autoHangUpTime, 0 };
+            user_data->auto_hangup_timer.id = call_info->id;
+            user_data->auto_hangup_timer.cb = &call_timeout_callback;
+            pjsua_schedule_timer(&user_data->auto_hangup_timer, &delay);
+        }
+    }
 
     CString* str = new CString();
     CString adder;
@@ -456,12 +450,14 @@ LRESULT CmainDlg::onCallState(WPARAM wParam, LPARAM lParam)
                 }
             }
         }
+        user_data->CS.Lock();
         if (cnt_srtp && cnt == cnt_srtp) {
             user_data->srtp = MSIP_SRTP;
         }
         else {
             user_data->srtp = MSIP_SRTP_DISABLED;
         }
+        user_data->CS.Unlock();
         break;
     }
     if (!str->IsEmpty() && !adder.IsEmpty()) {
@@ -500,7 +496,10 @@ LRESULT CmainDlg::onCallState(WPARAM wParam, LPARAM lParam)
             MSIP::RunCmd(accountSettings.cmdCallStart, params);
         }
         //--
-        if (!user_data->commands.IsEmpty()) {
+        user_data->CS.Lock();
+        bool hasCommands = !user_data->commands.IsEmpty();
+        user_data->CS.Unlock();
+        if (hasCommands) {
             SetTimer((UINT_PTR)call_info->id, 1000, (TIMERPROC)DTMFQueueTimerHandler);
         }
     }
@@ -542,7 +541,10 @@ LRESULT CmainDlg::onCallState(WPARAM wParam, LPARAM lParam)
         call_info->state == PJSIP_INV_STATE_DISCONNECTED ||
         accountSettings.singleMode;
 
-    if (user_data->autoAnswer) {
+    user_data->CS.Lock();
+    bool autoAnswered = user_data->autoAnswer;
+    user_data->CS.Unlock();
+    if (autoAnswered) {
         if (!accountSettings.bringToFrontOnIncoming) {
             doNotShowMessagesWindow = true;
         }
@@ -659,8 +661,6 @@ LRESULT CmainDlg::onCallState(WPARAM wParam, LPARAM lParam)
         }
     }
 
-    user_data->CS.Unlock();
-
     // --delete user data
     if (call_info->state == PJSIP_INV_STATE_DISCONNECTED) {
         if (user_data) {
@@ -691,21 +691,38 @@ LRESULT CmainDlg::onCallState(WPARAM wParam, LPARAM lParam)
     return 0;
 }
 
+struct CallMediaEvent {
+    pjsua_call_id callId;
+    CString dialogId;
+};
+
 static void on_call_media_state(pjsua_call_id call_id)
 {
     statistics.cbCallMediaState++;
     statistics.cbCallMediaStateTime = CTime::GetCurrentTime().GetTime();
-    pjsua_call_info* call_info = new pjsua_call_info();
-    if (pjsua_call_get_info(call_id, call_info) != PJ_SUCCESS || call_info->state == PJSIP_INV_STATE_NULL) {
-        delete call_info;
-        return;
+    pjsua_call_info info;
+    if (!IsWindow(mainDlg->m_hWnd) || pjsua_call_get_info(call_id, &info) != PJ_SUCCESS) return;
+    std::unique_ptr<CallMediaEvent> event(new CallMediaEvent());
+    event->callId = call_id;
+    event->dialogId = MSIP::PjToStr(&info.call_id);
+    if (PostMessage(mainDlg->m_hWnd, UM_ON_CALL_MEDIA_STATE, (WPARAM)event.get(), 0)) {
+        event.release();
     }
+}
 
+LRESULT CmainDlg::onCallMediaState(WPARAM wParam, LPARAM lParam)
+{
+    // Bridge, conference, recording and tone state belong to the UI thread.
+    // Never acquire per-call data locks from a PJSIP media callback.
+    std::unique_ptr<CallMediaEvent> event((CallMediaEvent*)wParam);
+    pjsua_call_info current;
+    if (!is_pjsua_running() || pjsua_call_get_info(event->callId, &current) != PJ_SUCCESS ||
+        MSIP::PjToStr(&current.call_id) != event->dialogId ||
+        !pjsua_call_is_active(current.id) || current.state == PJSIP_INV_STATE_NULL ||
+        current.state == PJSIP_INV_STATE_DISCONNECTED) return 0;
+    pjsua_call_info* call_info = &current;
     call_user_data* user_data = (call_user_data*)pjsua_call_get_user_data(call_info->id);
-    if (!user_data) {
-        user_data = new call_user_data(call_info->id);
-        pjsua_call_set_user_data(call_info->id, user_data);
-    }
+    if (!user_data) return 0;
 
     if (msip_call_audio_allowed(*call_info) &&
         (call_info->media_status == PJSUA_CALL_MEDIA_ACTIVE
@@ -718,12 +735,13 @@ static void on_call_media_state(pjsua_call_id call_id)
         //--
         user_data->CS.Lock();
         user_data->holdFrom = -1;
-        if (user_data->recorder_id != PJSUA_INVALID_ID) {
-            pjsua_conf_port_id rec_conf_port_id = pjsua_recorder_get_conf_port(user_data->recorder_id);
+        pjsua_recorder_id recorder = user_data->recorder_id;
+        user_data->CS.Unlock();
+        if (recorder != PJSUA_INVALID_ID) {
+            pjsua_conf_port_id rec_conf_port_id = pjsua_recorder_get_conf_port(recorder);
             pjsua_conf_connect(call_info->conf_slot, rec_conf_port_id);
             pjsua_conf_adjust_tx_level(rec_conf_port_id, 1);
         }
-        user_data->CS.Unlock();
 
         //--
         ::SetTimer(mainDlg->pageDialer->m_hWnd, IDT_TIMER_VU_METER, 100, NULL);
@@ -744,14 +762,6 @@ static void on_call_media_state(pjsua_call_id call_id)
         user_data->CS.Unlock();
         //--
     }
-
-    PostMessage(mainDlg->m_hWnd, UM_ON_CALL_MEDIA_STATE, (WPARAM)call_info, (LPARAM)user_data);
-}
-
-LRESULT CmainDlg::onCallMediaState(WPARAM wParam, LPARAM lParam)
-{
-    pjsua_call_info* call_info = (pjsua_call_info*)wParam;
-    call_user_data* user_data = (call_user_data*)lParam;
 
     messagesDlg->UpdateHoldButton(call_info);
 
@@ -785,7 +795,6 @@ LRESULT CmainDlg::onCallMediaState(WPARAM wParam, LPARAM lParam)
         onRefreshLevels(0, 0);
     }
 
-    delete call_info;
 
     return 0;
 }
@@ -829,65 +838,87 @@ static void on_call_media_event(pjsua_call_id call_id,
     //#endif
 }
 
+// PJSIP holds library locks during this callback. Copy only owned header
+// values here; cross-call policy and UI work run after the callback returns.
+struct IncomingCallEvent {
+    pjsua_call_id callId;
+    CString dialogId;
+    CString diversion;
+    CString callerId;
+    CString userAgent;
+    CString autoAnswerHeader;
+    CString callInfoHeader;
+};
+
+static CString IncomingHeader(pjsip_rx_data* rdata, const char* name)
+{
+    pj_str_t headerName = pj_str(const_cast<char*>(name));
+    pjsip_generic_string_hdr* header = (pjsip_generic_string_hdr*)
+        pjsip_msg_find_hdr_by_name(rdata->msg_info.msg, &headerName, NULL);
+    return header ? MSIP::PjToStr(&header->hvalue, true) : CString();
+}
+
 static void on_incoming_call(pjsua_acc_id acc, pjsua_call_id call_id,
     pjsip_rx_data* rdata)
 {
     statistics.cbIncomingCall++;
     statistics.cbIncomingCallTime = CTime::GetCurrentTime().GetTime();
     statistics.postIncomingCall = 0;
-
-    pjsua_call_info* call_info = new pjsua_call_info();
-    if (pjsua_call_get_info(call_id, call_info) != PJ_SUCCESS) {
-        return;
-    }
-
-    call_user_data* user_data = (call_user_data*)pjsua_call_get_user_data(call_info->id);
-    if (!user_data) {
-        user_data = new call_user_data(call_info->id);
-        pjsua_call_set_user_data(call_info->id, user_data);
-    }
-
-    user_data->CS.Lock();
-
+    if (!IsWindow(mainDlg->m_hWnd)) return;
+    pjsua_call_info info;
+    if (pjsua_call_get_info(call_id, &info) != PJ_SUCCESS) return;
     if (accountSettings.forceCodec) {
         pjsua_call* call;
         pjsip_dialog* dlg;
-        pj_status_t status;
-        status = acquire_call("on_incoming_call()", call_id, &call, &dlg);
-        if (status == PJ_SUCCESS) {
+        if (acquire_call("on_incoming_call()", call_id, &call, &dlg) == PJ_SUCCESS) {
             pjmedia_sdp_neg_set_prefer_remote_codec_order(call->inv->neg, PJ_FALSE);
             pjsip_dlg_dec_lock(dlg);
         }
     }
-    pjsip_generic_string_hdr* hsr;
-    // -- diversion
-    const pj_str_t headerDiversion = { "Diversion",9 };
-    hsr = (pjsip_generic_string_hdr*)pjsip_msg_find_hdr_by_name(rdata->msg_info.msg, &headerDiversion, NULL);
-    if (hsr) {
-        CString str = MSIP::PjToStr(&hsr->hvalue, true);
-        SIPURI sipuriDiversion;
-        MSIP::ParseSIPURI(str, sipuriDiversion);
-        user_data->diversion = !sipuriDiversion.user.IsEmpty() ? sipuriDiversion.user : sipuriDiversion.domain;
+    // The initial incoming notification can precede on_call_state. Attach
+    // data here while PJSIP serializes this dialog, never from the UI thread.
+    if (!pjsua_call_get_user_data(call_id)) {
+        pjsua_call_set_user_data(call_id, new call_user_data(call_id));
     }
-    // -- end diversion
-    // -- caller id
-    user_data->callerID = GetPAI(rdata);
-    if (!user_data->callerID.IsEmpty()) {
-        user_data->name.Empty();
+    std::unique_ptr<IncomingCallEvent> event(new IncomingCallEvent());
+    event->callId = call_id;
+    event->dialogId = MSIP::PjToStr(&info.call_id);
+    event->diversion = IncomingHeader(rdata, "Diversion");
+    event->callerId = GetPAI(rdata);
+    event->userAgent = IncomingHeader(rdata, "User-Agent");
+    event->autoAnswerHeader = IncomingHeader(rdata, "X-AUTOANSWER");
+    event->callInfoHeader = IncomingHeader(rdata, "Call-Info");
+    statistics.postIncomingCall = 1;
+    if (PostMessage(mainDlg->m_hWnd, UM_ON_INCOMING_CALL, (WPARAM)event.get(), 0)) {
+        event.release();
     }
-    // -- end caller id
-    // -- user agent
-    const pj_str_t headerUserAgent = { "User-Agent",10 };
-    hsr = (pjsip_generic_string_hdr*)pjsip_msg_find_hdr_by_name(rdata->msg_info.msg, &headerUserAgent, NULL);
-    if (hsr) {
-        user_data->userAgent = MSIP::PjToStr(&hsr->hvalue, true);
-        int pos = user_data->userAgent.FindOneOf(_T("~+-"));
-        if (pos) {
-            user_data->userAgent = user_data->userAgent.Left(pos);
-        }
-    }
-    // -- end user agent
+}
 
+LRESULT CmainDlg::onIncomingCall(WPARAM wParam, LPARAM lParam)
+{
+    std::unique_ptr<IncomingCallEvent> event((IncomingCallEvent*)wParam);
+    statistics.postIncomingCall0 = 1;
+    pjsua_call_info current;
+    if (!is_pjsua_running() || pjsua_call_get_info(event->callId, &current) != PJ_SUCCESS ||
+        MSIP::PjToStr(&current.call_id) != event->dialogId ||
+        current.role != PJSIP_ROLE_UAS || !pjsua_call_is_active(current.id) ||
+        (current.state != PJSIP_INV_STATE_INCOMING && current.state != PJSIP_INV_STATE_EARLY)) {
+        return 0;
+    }
+    pjsua_call_info* call_info = &current;
+    call_user_data* user_data = (call_user_data*)pjsua_call_get_user_data(current.id);
+    if (!user_data) return 0;
+    {
+        CSingleLock lock(&user_data->CS, TRUE);
+        SIPURI diversion;
+        MSIP::ParseSIPURI(event->diversion, diversion);
+        user_data->diversion = !diversion.user.IsEmpty() ? diversion.user : diversion.domain;
+        user_data->callerID = event->callerId;
+        if (!user_data->callerID.IsEmpty()) user_data->name.Empty();
+        user_data->userAgent = event->userAgent;
+        int pos = user_data->userAgent.FindOneOf(_T("~+-"));
+        if (pos >= 0) user_data->userAgent = user_data->userAgent.Left(pos);
+    }
     SIPURI sipuri;
     ParseCallSIPURI(call_info, user_data, sipuri);
 
@@ -897,49 +928,27 @@ static void on_incoming_call(pjsua_acc_id acc, pjsua_call_id call_id,
     }
     //--
     //--
-    bool busy = false;
+    // A matching remote address can represent a separate incoming dialog,
+    // including a consultation routed back to this account by the PBX.
     pjsua_call_id call_ids[PJSUA_MAX_CALLS];
     unsigned calls_count = PJSUA_MAX_CALLS;
     unsigned calls_count_cmp = 0;
     if (pjsua_enum_calls(call_ids, &calls_count) == PJ_SUCCESS) {
         for (unsigned i = 0; i < calls_count; ++i) {
-            pjsua_call_info call_info_curr;
-            if (pjsua_call_get_info(call_ids[i], &call_info_curr) == PJ_SUCCESS) {
-                call_user_data* user_data_curr = (call_user_data*)pjsua_call_get_user_data(call_info_curr.id);
-                SIPURI sipuri_curr;
-                ParseCallSIPURI(&call_info_curr, user_data_curr, sipuri_curr);
-                if (call_info_curr.id != call_info->id &&
-                    sipuri.user + _T("@") + sipuri.domain == sipuri_curr.user + _T("@") + sipuri_curr.domain
-                    ) {
-                    busy = true;
-                    break;
-                }
-                if (user_data_curr) {
-                    user_data_curr->CS.Lock();
-                    if (!user_data_curr->hangup && call_info_curr.state != PJSIP_INV_STATE_DISCONNECTED) {
-                        calls_count_cmp++;
-                    }
-                    user_data_curr->CS.Unlock();
-                }
-                else {
-                    if (call_info_curr.state != PJSIP_INV_STATE_DISCONNECTED) {
-                        calls_count_cmp++;
-                    }
-                }
-            }
+            if (pjsua_call_is_active(call_ids[i])) calls_count_cmp++;
         }
     }
-    if (busy) {
-        msip_call_busy(call_info->id, _T("Already in call with this contact"));
+    if ((!accountSettings.callWaiting && calls_count_cmp > 1) || (accountSettings.maxConcurrentCalls > 0 && calls_count_cmp > accountSettings.maxConcurrentCalls)) {
+        user_data->CS.Lock();
         user_data->hidden = true;
-    }
-    else if ((!accountSettings.callWaiting && calls_count_cmp > 1) || (accountSettings.maxConcurrentCalls > 0 && calls_count_cmp > accountSettings.maxConcurrentCalls)) {
+        user_data->CS.Unlock();
         msip_call_busy(call_info->id, _T("Maximum concurrent calls reached"));
-        user_data->hidden = true;
     }
     else if (!mainDlg->callIdIncomingIgnore.IsEmpty() && mainDlg->callIdIncomingIgnore == MSIP::PjToStr(&call_info->call_id)) {
-        pjsua_call_answer(call_info->id, 487, NULL, NULL);
+        user_data->CS.Lock();
         user_data->hidden = true;
+        user_data->CS.Unlock();
+        pjsua_call_answer(call_info->id, 487, NULL, NULL);
     }
     else {
         bool reject = false;
@@ -991,8 +1000,10 @@ static void on_incoming_call(pjsua_acc_id acc, pjsua_call_id call_id,
             if (reason.IsEmpty()) {
                 reason = _T("Incoming calls blocked by user");
             }
-            msip_call_busy(call_info->id, reason);
+            user_data->CS.Lock();
             user_data->hidden = true;
+            user_data->CS.Unlock();
+            msip_call_busy(call_info->id, reason);
         }
         else {
             bool autoAnswer = false;
@@ -1004,33 +1015,14 @@ static void on_incoming_call(pjsua_acc_id acc, pjsua_call_id call_id,
                 autoAnswer = accountSettings.AA;
             }
             else if (accountSettings.autoAnswer == _T("header")) {
-                //--
-                pjsip_generic_string_hdr* hsr = NULL;
-                const pj_str_t header = pj_str("X-AUTOANSWER");
-                hsr = (pjsip_generic_string_hdr*)pjsip_msg_find_hdr_by_name(rdata->msg_info.msg, &header, NULL);
-                if (hsr) {
-                    CString autoAnswerValue = MSIP::PjToStr(&hsr->hvalue, TRUE);
-                    autoAnswerValue.MakeLower();
-                    if (autoAnswerValue == _T("true") || autoAnswerValue == _T("1")) {
-                        autoAnswer = true;
-                    }
-                }
-                //--
+                CString value = event->autoAnswerHeader;
+                value.MakeLower();
+                autoAnswer = value == _T("true") || value == _T("1");
                 if (!autoAnswer) {
-                    pjsip_generic_string_hdr* hsr = NULL;
-                    const pj_str_t header = pj_str("Call-Info");
-                    hsr = (pjsip_generic_string_hdr*)pjsip_msg_find_hdr_by_name(rdata->msg_info.msg, &header, NULL);
-                    if (hsr) {
-                        CString callInfoValue = MSIP::PjToStr(&hsr->hvalue, TRUE);
-                        callInfoValue.MakeLower();
-                        if (callInfoValue.Find(_T("auto answer")) != -1) {
-                            autoAnswer = true;
-                        }
-                        else {
-                            autoAnswer = CustomDialPlan::ParseAnswerAfter(
-                                callInfoValue.GetString(), autoAnswerDelay);
-                        }
-                    }
+                    value = event->callInfoHeader;
+                    value.MakeLower();
+                    autoAnswer = value.Find(_T("auto answer")) != -1 ||
+                        CustomDialPlan::ParseAnswerAfter(value.GetString(), autoAnswerDelay);
                 }
             }
 
@@ -1053,6 +1045,8 @@ static void on_incoming_call(pjsua_acc_id acc, pjsua_call_id call_id,
                     autoAnswer = false;
                 }
             }
+            bool forwardNow = false;
+            bool answerNow = false;
             bool forwarding = false;
             if (!accountSettings.forwardingNumber.IsEmpty()) {
                 if (accountSettings.forwarding == _T("all") ||
@@ -1074,7 +1068,7 @@ static void on_incoming_call(pjsua_acc_id acc, pjsua_call_id call_id,
                     }
                 }
                 else {
-                    user_data->forwarding = true;
+                    forwardNow = true;
                 }
             }
             if (autoAnswer) {
@@ -1085,94 +1079,62 @@ static void on_incoming_call(pjsua_acc_id acc, pjsua_call_id call_id,
                     }
                 }
                 else {
-                    user_data->autoAnswer = true;
+                    answerNow = true;
                 }
             }
-            statistics.postIncomingCall = 1;
-            statistics.postIncomingCall0 = 0;
-            statistics.postIncomingCall1 = 0;
-            statistics.postIncomingCall2 = 0;
-            statistics.postIncomingCall3 = 0;
-            statistics.postIncomingCall4 = 0;
-            statistics.postIncomingCall5 = 0;
-            statistics.postIncomingCall6 = 0;
-            statistics.postIncomingCall7 = 0;
-            statistics.postIncomingCall8 = 0;
-            statistics.postIncomingCall9 = 0;
-            PostMessage(mainDlg->m_hWnd, UM_ON_INCOMING_CALL, (WPARAM)call_info, (LPARAM)user_data);
-        }
-    }
-    user_data->CS.Unlock();
-}
+            GetNameForCall(sipuri, user_data);
+            accountSettings.lastCallNumber = sipuri.user;
+            accountSettings.lastCallHasVideo = false;
 
-LRESULT CmainDlg::onIncomingCall(WPARAM wParam, LPARAM lParam)
-{
-    statistics.postIncomingCall0 = 1;
-    pjsua_call_info* call_info = (pjsua_call_info*)wParam;
-    call_user_data* user_data = (call_user_data*)lParam;
+            statistics.postIncomingCall1 = 1;
 
-    user_data->CS.Lock();
+            bool playBeep = false;
 
-    SIPURI sipuri;
-    ParseCallSIPURI(call_info, user_data, sipuri);
-
-    GetNameForCall(sipuri, user_data);
-
-    accountSettings.lastCallNumber = sipuri.user;
-    accountSettings.lastCallHasVideo = false;
-
-    statistics.postIncomingCall1 = 1;
-
-    bool autoAnswer = user_data->autoAnswer;
-    user_data->autoAnswer = false;
-    bool playBeep = false;
-
-    if (user_data->forwarding && messagesDlg->CallAction(MSIP_ACTION_FORWARD, _T(""), call_info->id)) {
-        statistics.postIncomingCall2 = 1;
-    }
-    else
-        if (autoAnswer && AutoAnswer(call_info->id)) {
-            statistics.postIncomingCall3 = 1;
-        }
-        else {
-            bool createRinging = true;
-            if (createRinging) {
-                PostMessage(UM_CREATE_RINGING, (WPARAM)call_info->id, NULL);
+            if (forwardNow && messagesDlg->CallAction(MSIP_ACTION_FORWARD, _T(""), call_info->id)) {
+                statistics.postIncomingCall2 = 1;
             }
-            statistics.postIncomingCall4 = 1;
-            pjsua_call_answer(call_info->id, 180, NULL, NULL);
-            if (messagesDlg->GetCallsCount()) {
-                statistics.postIncomingCall5 = 1;
+            else
+                if (answerNow && AutoAnswer(call_info->id)) {
+                    statistics.postIncomingCall3 = 1;
+                }
+                else {
+                    bool createRinging = true;
+                    if (createRinging) {
+                        PostMessage(UM_CREATE_RINGING, (WPARAM)call_info->id, NULL);
+                    }
+                    statistics.postIncomingCall4 = 1;
+                    pjsua_call_answer(call_info->id, 180, NULL, NULL);
+                    if (messagesDlg->GetCallsCount()) {
+                        statistics.postIncomingCall5 = 1;
 
-                playBeep = true;
-            }
-            else {
-                statistics.postIncomingCall6 = 1;
-                    if (!accountSettings.ringtone.GetLength()) {
-                        onPlayerPlay(MSIP_SOUND_RINGTONE, 0);
+                        playBeep = true;
                     }
                     else {
-                        onPlayerPlay(MSIP_SOUND_CUSTOM, (LPARAM)&accountSettings.ringtone);
+                        statistics.postIncomingCall6 = 1;
+                            if (!accountSettings.ringtone.GetLength()) {
+                                onPlayerPlay(MSIP_SOUND_RINGTONE, 0);
+                            }
+                            else {
+                                onPlayerPlay(MSIP_SOUND_CUSTOM, (LPARAM)&accountSettings.ringtone);
+                            }
                     }
+                    if (accountSettings.headsetSupport) {
+                        Hid::SetRing(true);
+                    }
+                    statistics.postIncomingCall7 = 1;
+                    //--
+                    if (!accountSettings.cmdCallRing.IsEmpty()) {
+                        CString params = sipuri.user;
+                        MSIP::RunCmd(accountSettings.cmdCallRing, params);
+                    }
+                    //--
+                }
+            statistics.postIncomingCall8 = 1;
+            if (accountSettings.localDTMF && playBeep) {
+                onPlayerPlay(MSIP_SOUND_RINGIN2, 0);
             }
-            if (accountSettings.headsetSupport) {
-                Hid::SetRing(true);
-            }
-            statistics.postIncomingCall7 = 1;
-            //--
-            if (!accountSettings.cmdCallRing.IsEmpty()) {
-                CString params = sipuri.user;
-                MSIP::RunCmd(accountSettings.cmdCallRing, params);
-            }
-            //--
         }
-    statistics.postIncomingCall8 = 1;
-    if (accountSettings.localDTMF && playBeep) {
-        onPlayerPlay(MSIP_SOUND_RINGIN2, 0);
     }
-
-    user_data->CS.Unlock();
-    delete call_info;
     statistics.postIncomingCall9 = 1;
     return 0;
 }
@@ -2755,13 +2717,15 @@ LRESULT CmainDlg::onCreateRingingDlg(WPARAM wParam, LPARAM lParam)
     }
 
     user_data->CS.Lock();
+    CString name = user_data->name;
+    CString agent = user_data->userAgent;
+    CString diversion = user_data->diversion;
+    user_data->CS.Unlock();
 
     RinginDlg* ringinDlg = new RinginDlg(this, call_info.rem_vid_cnt);
     ringinDlg->SetCallId(call_info.id);
 
     SIPURI sipuri;
-
-    CString name = user_data->name;
 
     ringinDlg->GetDlgItem(IDC_CALLER_NAME)->SetWindowText(name);
     ringinDlg->GetDlgItem(IDC_RINGIN_NAME_BLIND)->SetWindowText(name);
@@ -2773,8 +2737,8 @@ LRESULT CmainDlg::onCreateRingingDlg(WPARAM wParam, LPARAM lParam)
         info = sipuri.name + _T(" <") + info + _T(">");
     }
     str.AppendFormat(_T("%s\r\n"), info);
-    if (!user_data->userAgent.IsEmpty()) {
-        str.AppendFormat(_T("%s\r\n"), user_data->userAgent);
+    if (!agent.IsEmpty()) {
+        str.AppendFormat(_T("%s\r\n"), agent);
     }
     str.Append(_T("\r\n"));
     info = MSIP::PjToStr(&call_info.local_info, TRUE);
@@ -2782,8 +2746,8 @@ LRESULT CmainDlg::onCreateRingingDlg(WPARAM wParam, LPARAM lParam)
     info = (!sipuri.user.IsEmpty() ? sipuri.user + _T("@") : _T("")) + sipuri.domain;
     str.AppendFormat(_T("%s: %s\r\n"), Translate(_T("To")), info);
 
-    if (!user_data->diversion.IsEmpty()) {
-        str.AppendFormat(_T("%s: %s\r\n"), Translate(_T("Diversion")), user_data->diversion);
+    if (!diversion.IsEmpty()) {
+        str.AppendFormat(_T("%s: %s\r\n"), Translate(_T("Diversion")), diversion);
     }
     if (str == name) {
         str.Empty();
@@ -2807,7 +2771,6 @@ LRESULT CmainDlg::onCreateRingingDlg(WPARAM wParam, LPARAM lParam)
             BaloonPopup(Translate(_T("Incoming Call")), str, NIIF_INFO);
         }
     }
-    user_data->CS.Unlock();
     return 0;
 }
 
@@ -3071,6 +3034,7 @@ void CmainDlg::OnTimerCall()
                 if (user_data->srtp == MSIP_SRTP) {
                     icon = IDI_ACTIVE_SECURE;
                 }
+                user_data->CS.Unlock();
                 float MOS;
                 if (duration > 0 && user_data && msip_call_statistics(user_data, &MOS)) {
                     if (MOS <= 2) {
@@ -3080,7 +3044,6 @@ void CmainDlg::OnTimerCall()
                         icon = (icon == IDI_ACTIVE_SECURE ? IDI_ACTIVE_SECURE_YELLOW : IDI_ACTIVE_YELLOW);
                     }
                 }
-                user_data->CS.Unlock();
             }
         }
         UpdateWindowText(str, icon);
@@ -5098,7 +5061,7 @@ LRESULT CmainDlg::onCallAnswer(WPARAM wParam, LPARAM lParam)
                     pjsua_call_answer(call_id, -lParam, NULL, NULL);
                     return 0;
                 }
-                if (accountSettings.singleMode) {
+                if (accountSettings.singleMode && !messagesDlg->HasAttendedTransfer()) {
                     msip_call_hangup_all_noincoming();
                 }
                 call_user_data* answering_data = (call_user_data*)pjsua_call_get_user_data(call_id);
@@ -5133,7 +5096,9 @@ LRESULT CmainDlg::onCallAnswer(WPARAM wParam, LPARAM lParam)
                 call_user_data* user_data = (call_user_data*)pjsua_call_get_user_data(call_id);
                 if (user_data) {
                     user_data->CS.Lock();
-                    if (user_data->autoAnswer) {
+                    bool autoAnswered = user_data->autoAnswer;
+                    user_data->CS.Unlock();
+                    if (autoAnswered) {
                         if (!accountSettings.bringToFrontOnIncoming) {
                             restore = false;
                             if (GetForegroundWindow()->GetTopLevelParent() != this) {
@@ -5151,7 +5116,6 @@ LRESULT CmainDlg::onCallAnswer(WPARAM wParam, LPARAM lParam)
                             }
                         }
                     }
-                    user_data->CS.Unlock();
                 }
 
                 if (restore) {

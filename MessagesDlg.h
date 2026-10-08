@@ -76,10 +76,12 @@ public:
 	void UpdateHoldButton(pjsua_call_info *call_info);	
 	void UpdateRecButton(call_user_data *user_data = NULL);
 	void UpdateTabIcon(MessagesContact *messagesContact, int tabIndex=-1, pjsua_call_info *call_info=NULL, call_user_data *user_data = NULL);
-	bool CallAction(int action, CString number, pjsua_call_id forward_call_id = PJSUA_INVALID_ID);
+	bool CallAction(int action, CString number, pjsua_call_id action_call_id = PJSUA_INVALID_ID);
 	void Merge(pjsua_call_id call_id);
 	void Separate(pjsua_call_id call_id);
 	void OnAttendedTransferResult(pjsua_call_id call_id, int status);
+	bool HasAttendedTransfer() const { return transferSource != PJSUA_INVALID_ID; }
+	bool HandleConsultationEnd();
 
 	CClosableTabCtrl* tab;
 	MessagesContact* lastCall;

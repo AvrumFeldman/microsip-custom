@@ -1,3 +1,4 @@
+// Modified 2026-10-08 for MicroSIP Custom: pin transfer dialogs to their originating SIP call.
 /*
  * Copyright (C) 2011-2026 MicroSIP (http://www.microsip.org)
  *
@@ -41,6 +42,7 @@ public:
 	enum { IDD = IDD_TRANSFER };
 	msip_action action;
 	pjsua_call_id callId;
+	CString callDialog;
 	void SetAction(msip_action action, pjsua_call_id call_id = PJSUA_INVALID_ID);
 	bool Action(msip_action action);
 	void LoadFromContacts(Contact *selectedContact = NULL);

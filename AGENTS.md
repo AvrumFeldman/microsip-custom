@@ -12,4 +12,4 @@ The maintainer prefers parallel delegation for substantial tasks. The primary ag
 - Keep conference participant controls and attended transfers usable in single-call mode.
 - Validate changes with isolated local SIP peers and dedicated audio test sessions. Never use a maintainer's real SIP credentials, place outside calls, or mutate the installed MicroSIP configuration for tests.
 - Keep generated files in ignored build/output directories. Public packages must use fresh staging, a clean portable configuration, license notices, and matching source; never ship account settings, history, recordings, logs, or credentials.
-- Keep public pull requests welcome and document changes relative to official MicroSIP. Check the integrated release build before publishing a requested release.
+- Public pull requests are welcome and appreciated, including AI-assisted and AI-generated contributions. Apply the same review and validation standards to all submissions. Document changes relative to official MicroSIP and check the integrated release build before publishing a requested release.

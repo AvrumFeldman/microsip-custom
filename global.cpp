@@ -337,14 +337,15 @@ void msip_tonegen_init(call_tonegen_data*& cd, pjsua_call_id call_id, bool inban
         }
         user_data->CS.Lock();
         user_data->tonegen_data = cd;
-        if (user_data->recorder_id != PJSUA_INVALID_ID) {
-            pjsua_conf_port_id rec_conf_port_id = pjsua_recorder_get_conf_port(user_data->recorder_id);
+        pjsua_recorder_id recorder = user_data->recorder_id;
+        user_data->CS.Unlock();
+        if (recorder != PJSUA_INVALID_ID) {
+            pjsua_conf_port_id rec_conf_port_id = pjsua_recorder_get_conf_port(recorder);
             if (cd->rec_conf_port_id != rec_conf_port_id) {
                 pjsua_conf_connect(cd->toneslot, rec_conf_port_id);  // play to recorder
                 cd->rec_conf_port_id = rec_conf_port_id;
             }
         }
-        user_data->CS.Unlock();
         if (inband) {
             if (!cd->remote_connected) {
                 pjsua_conf_connect(cd->toneslot, ci.conf_slot); // play to remote
@@ -399,9 +400,10 @@ void DTMFQueueTimerHandler(
     if (is_pjsua_running() && pjsua_call_is_active(call_id)) {
         call_user_data* user_data = (call_user_data*)pjsua_call_get_user_data(call_id);
         if (user_data) {
+            CString dtmf;
+            bool moreCommands = false;
             user_data->CS.Lock();
             if (!user_data->commands.IsEmpty()) {
-                CString dtmf;
                 int pos = user_data->commands.Find(',');
                 if (pos != -1) {
                     dtmf = user_data->commands.Mid(0, pos);
@@ -411,14 +413,13 @@ void DTMFQueueTimerHandler(
                     dtmf = user_data->commands;
                     user_data->commands.Empty();
                 }
-                if (!dtmf.IsEmpty()) {
-                    msip_call_dial_dtmf(call_id, dtmf);
-                }
-                if (!user_data->commands.IsEmpty()) {
-                    ::SetTimer(hwnd, idEvent, 1000 + 200 * dtmf.GetLength(), (TIMERPROC)DTMFQueueTimerHandler);
-                }
+                moreCommands = !user_data->commands.IsEmpty();
             }
             user_data->CS.Unlock();
+            if (!dtmf.IsEmpty()) msip_call_dial_dtmf(call_id, dtmf);
+            if (moreCommands) {
+                ::SetTimer(hwnd, idEvent, 1000 + 200 * dtmf.GetLength(), (TIMERPROC)DTMFQueueTimerHandler);
+            }
         }
     }
 }
@@ -1328,7 +1329,9 @@ void msip_call_end(pjsua_call_id call_id)
     if (user_data) {
         user_data->CS.Lock();
         user_data->hangup = true;
-        if (user_data->inConference) {
+        bool inConference = user_data->inConference;
+        user_data->CS.Unlock();
+        if (inConference) {
             pjsua_call_info call_info;
             if (pjsua_call_get_info(call_id, &call_info) == PJ_SUCCESS && call_info.state == PJSIP_INV_STATE_CONFIRMED) {
                 pjsua_call_id call_ids[PJSUA_MAX_CALLS];
@@ -1354,7 +1357,6 @@ void msip_call_end(pjsua_call_id call_id)
                 }
             }
         }
-        user_data->CS.Unlock();
     }
     msip_call_hangup_fast(call_id);
 }
@@ -1367,7 +1369,9 @@ void msip_conference_join(pjsua_call_info* call_info)
     call_user_data* user_data = (call_user_data*)pjsua_call_get_user_data(call_info->id);
     if (user_data) {
         user_data->CS.Lock();
-        if (user_data->inConference) {
+        bool inConference = user_data->inConference;
+        user_data->CS.Unlock();
+        if (inConference) {
             pjsua_call_id call_ids[PJSUA_MAX_CALLS];
             unsigned count = PJSUA_MAX_CALLS;
             if (pjsua_enum_calls(call_ids, &count) == PJ_SUCCESS) {
@@ -1417,7 +1421,6 @@ void msip_conference_join(pjsua_call_info* call_info)
                 hWnd->PostMessage(UM_TAB_ICON_UPDATE, (WPARAM)call_info->id, NULL);
             }
         }
-        user_data->CS.Unlock();
     }
 }
 
@@ -1431,7 +1434,9 @@ void msip_conference_leave(pjsua_call_info* call_info, call_user_data* user_data
     }
     if (user_data) {
         user_data->CS.Lock();
-        if (user_data->inConference) {
+        bool inConference = user_data->inConference;
+        user_data->CS.Unlock();
+        if (inConference) {
             if (user_data->recorder_id != PJSUA_INVALID_ID) {
                 msip_call_recording_stop(user_data);
             }
@@ -1484,10 +1489,11 @@ void msip_conference_leave(pjsua_call_info* call_info, call_user_data* user_data
                 }
             }
             if (!hold) {
+                user_data->CS.Lock();
                 user_data->inConference = false;
+                user_data->CS.Unlock();
             }
         }
-        user_data->CS.Unlock();
     }
 }
 
@@ -1499,7 +1505,9 @@ void msip_call_hold(pjsua_call_info* call_info)
     call_user_data* user_data = (call_user_data*)pjsua_call_get_user_data(call_info->id);
     if (user_data) {
         user_data->CS.Lock();
-        if (user_data->inConference) {
+        bool inConference = user_data->inConference;
+        user_data->CS.Unlock();
+        if (inConference) {
             pjsua_call_id call_ids[PJSUA_MAX_CALLS];
             unsigned count = PJSUA_MAX_CALLS;
             if (pjsua_enum_calls(call_ids, &count) == PJ_SUCCESS) {
@@ -1527,7 +1535,6 @@ void msip_call_hold(pjsua_call_info* call_info)
                 }
             }
         }
-        user_data->CS.Unlock();
     }
     if (call_info->state == PJSIP_INV_STATE_CONFIRMED) {
         if (call_info->media_status != PJSUA_CALL_MEDIA_LOCAL_HOLD && call_info->media_status != PJSUA_CALL_MEDIA_NONE) {
@@ -1646,13 +1653,14 @@ void msip_call_busy(pjsua_call_id call_id, const CString &reason)
     }
 }
 
+// Recording and conference bridge changes run on the UI thread, including
+// deferred media events. Do not retain user-data locks across PJSIP calls.
 void msip_call_recording_start(call_user_data* user_data, pjsua_call_info* call_info, int id)
 {
     if (!is_pjsua_running()) {
         return;
     }
     if (user_data) {
-        user_data->CS.Lock();
         pjsua_recorder_id* recorder_id = &user_data->recorder_id;
         if (*recorder_id == PJSUA_INVALID_ID) {
             pjsua_call_info call_info_loc;
@@ -1672,7 +1680,6 @@ void msip_call_recording_start(call_user_data* user_data, pjsua_call_info* call_
                             }
                             call_user_data* user_data_curr = (call_user_data*)pjsua_call_get_user_data(call_ids[i]);
                             if (user_data_curr) {
-                                CSingleLock lock(&user_data_curr->CS, TRUE);
                                 if (user_data_curr->inConference && user_data_curr->recorder_id != PJSUA_INVALID_ID) {
                                     pjsua_conf_port_id rec_conf_port_id = pjsua_recorder_get_conf_port(user_data_curr->recorder_id);
                                     pjsua_conf_connect(call_info->conf_slot, rec_conf_port_id);
@@ -1732,7 +1739,6 @@ void msip_call_recording_start(call_user_data* user_data, pjsua_call_info* call_
                                     }
                                     call_user_data* user_data_curr = (call_user_data*)pjsua_call_get_user_data(call_ids[i]);
                                     if (user_data_curr) {
-                                        user_data_curr->CS.Lock();
                                         if (user_data_curr->inConference && user_data_curr->recorder_id == PJSUA_INVALID_ID) {
                                             pjsua_call_info call_info_curr;
                                             pjsua_call_get_info(call_ids[i], &call_info_curr);
@@ -1741,7 +1747,6 @@ void msip_call_recording_start(call_user_data* user_data, pjsua_call_info* call_
                                                 user_data_curr->recorder_id = *recorder_id;
                                             }
                                         }
-                                        user_data_curr->CS.Unlock();
                                     }
                                 }
                             }
@@ -1752,14 +1757,12 @@ void msip_call_recording_start(call_user_data* user_data, pjsua_call_info* call_
                 }
             }
         }
-        user_data->CS.Unlock();
     }
 }
 
 void msip_call_recording_stop(call_user_data* user_data, int id, bool force)
 {
     if (user_data) {
-        user_data->CS.Lock();
         pjsua_recorder_id* recorder_id = &user_data->recorder_id;
         if (*recorder_id != PJSUA_INVALID_ID) {
             if (is_pjsua_running()) {
@@ -1773,7 +1776,6 @@ void msip_call_recording_stop(call_user_data* user_data, int id, bool force)
                         }
                         call_user_data* user_data_curr = (call_user_data*)pjsua_call_get_user_data(call_ids[i]);
                         if (user_data_curr) {
-                            CSingleLock lock(&user_data_curr->CS, TRUE);
                             if (user_data_curr->recorder_id == *recorder_id) {
                                 if (force) {
                                     pjsua_conf_port_id rec_conf_port_id = pjsua_recorder_get_conf_port(user_data_curr->recorder_id);
@@ -1812,7 +1814,6 @@ void msip_call_recording_stop(call_user_data* user_data, int id, bool force)
             }
             *recorder_id = PJSUA_INVALID_ID;
         }
-        user_data->CS.Unlock();
     }
 }
 

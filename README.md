@@ -4,12 +4,14 @@ An independently maintained Windows voice-call fork of [MicroSIP](https://www.mi
 
 **[Download releases](https://github.com/AvrumFeldman/microsip-custom/releases)** · [Contribute a pull request](CONTRIBUTING.md) · [Build/license details](THIRD-PARTY-NOTICES.md)
 
+Pull requests are welcome and appreciated, including AI-assisted and AI-generated contributions. See [CONTRIBUTING.md](CONTRIBUTING.md) for how to submit a change.
+
 ## Changes from the official source
 
 | Area | Custom behavior |
 | --- | --- |
 | Entering digits | Local keypad tones use playback only; entering a number does not open the microphone. |
-| Incoming hunt-group calls | Ringing uses playback only; pre-answer media cannot activate capture. Other apps remain unmuted until you answer. |
+| All incoming calls | Ringing uses playback only; pre-answer media cannot activate capture. Ringing alone does not mute other apps. |
 | Microphone cleanup | Capture follows active call ownership and is released when the final call ends, including local hangup before the SIP peer acknowledges. A periodic state check recovers stale audio state. |
 | Music during calls | Optional settings: leave other audio unchanged, mute all other apps, or mute selected executable names. Previous mute states are restored after the last call. |
 | Crash recovery | A separate audio guard restores other apps if MicroSIP exits or crashes. |
@@ -38,7 +40,9 @@ In **Menu → Settings → Other audio during calls**, choose:
 
 Muting starts on an outgoing call attempt or when you answer an incoming call. It remains active through hold and overlapping calls until the last call ends. It preserves volume levels and apps that were already muted. Manually unmuting an app takes precedence for that session until the next call. New sessions/devices are checked every 200 ms, so a new player may be briefly audible. MicroSIP and Windows system sounds are excluded. The guard cannot restore audio if it is itself killed; exclusive-mode players may not follow Windows session mute controls.
 
-For an attended transfer, choose **Transfer → Attended Transfer (consult first)**, enter the destination and confirm. The original party is held while you speak to the destination. Choose **Complete attended transfer** to connect them, or **Cancel consultation and return** to resume the original call. This uses SIP REFER with Replaces and needs PBX/provider support. Existing configured PBX transfer feature codes remain supported.
+For an attended transfer, choose **Transfer → Attended Transfer (consult first)**, enter the destination and confirm. The original party is held while you speak to the destination. Choose **Complete attended transfer** to connect them, or **Cancel consultation and return** to resume the original call. **End** also cancels the consultation, including while it is ringing. A consultation routed back to the same account has separate Answer/Decline controls; answering it preserves the original held call. This uses SIP REFER with Replaces and needs PBX/provider support. Existing configured PBX transfer feature codes remain supported.
+
+Use the call controls to hang up before exiting. A forced process termination cannot send SIP hangup messages; the remote call may remain until the other party hangs up or the PBX detects the lost session. The audio guard restores Windows audio, but cannot terminate SIP calls after the application has been killed.
 
 During a conference, choose **CONF → Remove participant**, then the party to disconnect. The remaining parties stay connected and single-call mode stays enabled.
 
@@ -54,7 +58,7 @@ pwsh ./build-custom.ps1 -SkipDependencies
 
 The script builds the pinned PJSIP/vcpkg dependencies in `../microsip-build`. Output is `out/microsip.exe` and `out/MicroSIPAudioGuard.exe`. `custom.vcxproj` is the supported application project; the original upstream project is retained for reference. See [DEPENDENCY-SOURCES.txt](DEPENDENCY-SOURCES.txt) to rebuild using the downloadable corresponding-source archives.
 
-The regression tests include `tests/MarkupTests.vcxproj` for XML compatibility, `tests/DialPlanTests.vcxproj` for dial-plan parsing, `tests/AudioFocusTests.vcxproj` for real Windows session mute/restore behavior, `tests/smoke_calls.py` for isolated local SIP call/audio transitions, and `tests/smoke_call_controls.py` for transfer/conference behavior. `tests/inspect_title.ps1` checks the actual Unicode title of the separate call window outside single-call mode. Build the C++ tests in Release/Win32 and run their executables in `out`. Audio tests require a Windows render device and target only their own silent sessions. SIP tests use synthetic peers and must run against a separate account-free test instance; see the scripts' prerequisites. Do not run them against a configured production softphone.
+The regression tests include `tests/MarkupTests.vcxproj` for XML compatibility, `tests/DialPlanTests.vcxproj` for dial-plan parsing, `tests/AudioFocusTests.vcxproj` for real Windows session mute/restore behavior, `tests/smoke_calls.py` for isolated local SIP call/audio transitions, `tests/smoke_call_controls.py` for transfer/conference behavior, and `tests/smoke_self_transfer.py` for consultations routed back to the same account. `tests/inspect_title.ps1` checks the actual Unicode title of the separate call window outside single-call mode. Build the C++ tests in Release/Win32 and run their executables in `out`. Audio tests require a Windows render device and target only their own silent sessions. SIP tests use synthetic peers and must run against a separate account-free test instance; see the scripts' prerequisites. Do not run them against a configured production softphone.
 
 Local synthetic SIP and Windows audio-session tests cover software transitions. Actual Bluetooth profile behavior and provider/PBX transfer interoperability still need a listening/call check with your setup.
 
