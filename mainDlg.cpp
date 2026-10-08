@@ -1,4 +1,5 @@
-﻿/*
+// Modified 2026-10-08 for MicroSIP Custom: microphone lifecycle, safe transfer status, taskbar icons and dialer layout.
+/*
  * Copyright (C) 2011-2026 MicroSIP (http://www.microsip.org)
  *
  * This program is free software; you can redistribute it and/or modify
@@ -45,7 +46,8 @@
 #include <Strsafe.h>
 #include <locale.h> 
 #include <Wtsapi32.h>
-#include "atlrx.h"
+#include <memory>
+#include "DialPlan.h"
 
 #include "afxvisualmanager.h"
 #include "afxvisualmanagerwindows.h"
@@ -302,6 +304,7 @@ static void on_call_state(pjsua_call_id call_id, pjsip_event* e)
 
 LRESULT CmainDlg::onCallState(WPARAM wParam, LPARAM lParam)
 {
+    UpdateAudioFocus();
     statistics.postCallState0 = 1;
     pjsua_call_info* call_info = (pjsua_call_info*)wParam;
     call_user_data* user_data = (call_user_data*)lParam;
@@ -694,6 +697,7 @@ static void on_call_media_state(pjsua_call_id call_id)
     statistics.cbCallMediaStateTime = CTime::GetCurrentTime().GetTime();
     pjsua_call_info* call_info = new pjsua_call_info();
     if (pjsua_call_get_info(call_id, call_info) != PJ_SUCCESS || call_info->state == PJSIP_INV_STATE_NULL) {
+        delete call_info;
         return;
     }
 
@@ -703,9 +707,11 @@ static void on_call_media_state(pjsua_call_id call_id)
         pjsua_call_set_user_data(call_info->id, user_data);
     }
 
-    if (call_info->media_status == PJSUA_CALL_MEDIA_ACTIVE
-        || call_info->media_status == PJSUA_CALL_MEDIA_REMOTE_HOLD
-        ) {
+    if (msip_call_audio_allowed(*call_info) &&
+        (call_info->media_status == PJSUA_CALL_MEDIA_ACTIVE
+        || call_info->media_status == PJSUA_CALL_MEDIA_REMOTE_HOLD)) {
+        // A previous local tone may have left the device in playback-only mode.
+        msip_set_sound_device(msip_audio_output);
         msip_conference_join(call_info);
         pjsua_conf_connect(call_info->conf_slot, 0);
         pjsua_conf_connect(0, call_info->conf_slot);
@@ -1021,20 +1027,8 @@ static void on_incoming_call(pjsua_acc_id acc, pjsua_call_id call_id,
                             autoAnswer = true;
                         }
                         else {
-                            CAtlRegExp<> regex;
-                            REParseError parseStatus = regex.Parse(_T("answer-after={[0-9]+}"), true);
-                            if (parseStatus == REPARSE_ERROR_OK) {
-                                CAtlREMatchContext<> mc;
-                                if (regex.Match(callInfoValue, &mc) && mc.m_uNumGroups == 1) {
-                                    const CAtlREMatchContext<>::RECHAR* szStart = 0;
-                                    const CAtlREMatchContext<>::RECHAR* szEnd = 0;
-                                    mc.GetMatch(0, &szStart, &szEnd);
-                                    ptrdiff_t nLength = szEnd - szStart;
-                                    CStringA text(szStart, nLength);
-                                    autoAnswerDelay = atoi(text);
-                                    autoAnswer = true;
-                                }
-                            }
+                            autoAnswer = CustomDialPlan::ParseAnswerAfter(
+                                callInfoValue.GetString(), autoAnswerDelay);
                         }
                     }
                 }
@@ -1343,6 +1337,13 @@ static void on_pager_status2(pjsua_call_id call_id, const pj_str_t * to, const p
     }
 }
 
+struct CallTransferStatusEvent {
+    pjsua_call_id callId;
+    CString dialogId;
+    CString message;
+    int status;
+};
+
 static void on_call_transfer_status(pjsua_call_id call_id,
     int status_code,
     const pj_str_t * status_text,
@@ -1351,59 +1352,57 @@ static void on_call_transfer_status(pjsua_call_id call_id,
 {
     statistics.cbCallTransferStatus++;
     statistics.cbCallTransferStatusTime = CTime::GetCurrentTime().GetTime();
-    pjsua_call_info* call_info = new pjsua_call_info();
-    if (pjsua_call_get_info(call_id, call_info) != PJ_SUCCESS || call_info->state == PJSIP_INV_STATE_NULL) {
+    pjsua_call_info call_info;
+    if (pjsua_call_get_info(call_id, &call_info) != PJ_SUCCESS || call_info.state == PJSIP_INV_STATE_NULL) {
         return;
     }
 
-    call_user_data* user_data = (call_user_data*)pjsua_call_get_user_data(call_info->id);
-    if (!user_data) {
-        user_data = new call_user_data(call_info->id);
-        pjsua_call_set_user_data(call_info->id, user_data);
-    }
-
-    CString* str = new CString();
-    str->Format(_T("%s: %s"),
+    // Own every queued value. PJSIP strings/user_data can be released before
+    // the UI processes this event, and call slots can be reused meanwhile.
+    CallTransferStatusEvent* event = new CallTransferStatusEvent();
+    event->callId = call_id;
+    event->dialogId = MSIP::PjToStr(&call_info.call_id);
+    event->status = status_code;
+    event->message.Format(_T("%s: %s"),
         Translate(_T("Call Transfer")),
         MSIP::PjToStr(status_text, TRUE)
     );
     if (final) {
-        str->AppendFormat(_T(" [%s]"), Translate(_T("Final")));
+        event->message.AppendFormat(_T(" [%s]"), Translate(_T("Final")));
     }
 
     if (status_code / 100 == 2) {
         *p_cont = PJ_FALSE;
     }
 
-    call_info->last_status = (pjsip_status_code)status_code;
-
-    call_info->call_id.ptr = (char*)user_data;
-    call_info->call_id.slen = 0;
-
-    PostMessage(mainDlg->m_hWnd, UM_ON_CALL_TRANSFER_STATUS, (WPARAM)call_info, (LPARAM)str);
+    if (!PostMessage(mainDlg->m_hWnd, UM_ON_CALL_TRANSFER_STATUS, (WPARAM)event, 0)) {
+        delete event;
+    }
 }
 
 LRESULT CmainDlg::onCallTransferStatus(WPARAM wParam, LPARAM lParam)
 {
-    pjsua_call_info* call_info = (pjsua_call_info*)wParam;
-    call_user_data* user_data = (call_user_data*)call_info->call_id.ptr;
-    CString* str = (CString*)lParam;
-
-
+    std::unique_ptr<CallTransferStatusEvent> event((CallTransferStatusEvent*)wParam);
+    pjsua_call_info call_info;
+    if (!is_pjsua_running() ||
+        pjsua_call_get_info(event->callId, &call_info) != PJ_SUCCESS ||
+        !pjsua_call_is_active(event->callId) ||
+        event->dialogId != MSIP::PjToStr(&call_info.call_id)) return 0;
+    call_user_data* user_data = (call_user_data*)pjsua_call_get_user_data(event->callId);
+    if (!user_data) return 0;
     MessagesContact* messagesContact = NULL;
-    CString number = MSIP::PjToStr(&call_info->remote_info, TRUE);
-    messagesContact = mainDlg->messagesDlg->AddTab(number, FALSE, call_info, user_data, TRUE, TRUE);
+    CString number = MSIP::PjToStr(&call_info.remote_info, TRUE);
+    messagesContact = messagesDlg->AddTab(number, FALSE, &call_info, user_data, TRUE, TRUE);
     if (messagesContact) {
-        mainDlg->messagesDlg->AddMessage(messagesContact, *str);
+        messagesDlg->AddMessage(messagesContact, event->message);
     }
-    if (call_info->last_status / 100 == 2) {
+    messagesDlg->OnAttendedTransferResult(call_info.id, event->status);
+    if (event->status / 100 == 2) {
         if (messagesContact) {
             messagesDlg->AddMessage(messagesContact, Translate(_T("Call transfered successfully, disconnecting call")));
         }
-        msip_call_hangup_fast(call_info->id);
+        msip_call_hangup_fast(call_info.id, &call_info);
     }
-    delete call_info;
-    delete str;
     return 0;
 }
 
@@ -1764,6 +1763,8 @@ CmainDlg::~CmainDlg(void)
 
 void CmainDlg::OnDestroy()
 {
+    KillTimer(IDT_TIMER_AUDIO_FOCUS);
+    audioFocus.Stop();
     statistics.destroyTime = CTime::GetCurrentTime().GetTime();
     CBaseDialog::OnDestroy();
 }
@@ -2011,21 +2012,25 @@ int CmainDlg::OnCreate(LPCREATESTRUCT lpCreateStruct)
 BOOL CmainDlg::OnInitDialog()
 {
     CBaseDialog::OnInitDialog();
+    SetTimer(IDT_TIMER_AUDIO_FOCUS, 250, NULL);
 
     messagesDlg = new MessagesDlg(this);
 
     SetupJumpList();
-    m_hIcon = theApp.LoadIcon(IDI_MAINFRAME);
+    m_hIcon = (HICON)LoadImage(AfxGetInstanceHandle(), MAKEINTRESOURCE(IDI_MAINFRAME),
+        IMAGE_ICON, GetSystemMetrics(SM_CXICON), GetSystemMetrics(SM_CYICON), LR_SHARED);
     iconSmall = (HICON)LoadImage(
         AfxGetInstanceHandle(),
         MAKEINTRESOURCE(IDI_MAINFRAME),
         IMAGE_ICON, GetSystemMetrics(SM_CXSMICON), GetSystemMetrics(SM_CYSMICON), LR_SHARED);
-    PostMessage(WM_SETICON, ICON_SMALL, (LPARAM)iconSmall);
 
     TranslateDialog(m_hWnd);
 
-    SetIcon(m_hIcon, TRUE);			// Set big icon
-    SetIcon(m_hIcon, FALSE);		// Set small icon
+    // Set both sizes synchronously, and provide class fallbacks for the shell.
+    SetIcon(m_hIcon, TRUE);
+    SetIcon(iconSmall, FALSE);
+    SetClassLongPtr(m_hWnd, GCLP_HICON, (LONG_PTR)m_hIcon);
+    SetClassLongPtr(m_hWnd, GCLP_HICONSM, (LONG_PTR)iconSmall);
 
     CRect mapRect;
 
@@ -2174,7 +2179,12 @@ BOOL CmainDlg::OnInitDialog()
     int offsetX = (clientRect.Width() - pageWidth) / 2;
     pageDialer->SetWindowPos(NULL, offsetX, offset, pageWidth, pageRect.Height(), SWP_NOZORDER);
 
+#ifdef MICROSIP_AUDIO_ONLY
+    // Keep the dial field at the top when the custom window is enlarged.
+    AutoMove(pageDialer->m_hWnd, 40, 0, 20, 60);
+#else
     AutoMove(pageDialer->m_hWnd, 40, 40, 20, 20);
+#endif
 
         pageCalls = new Calls(this);
         pageCalls->OnCreated();
@@ -2790,7 +2800,7 @@ LRESULT CmainDlg::onCreateRingingDlg(WPARAM wParam, LPARAM lParam)
         str = sipuri.user;
     }
     else {
-        str.Format(_T("%s – %s"), name, sipuri.user);
+        str.Format(_T("%s \u2013 %s"), name, sipuri.user);
     }
     if (!accountSettings.bringToFrontOnIncoming) {
         if (GetForegroundWindow()->GetTopLevelParent() != this) {
@@ -3096,8 +3106,25 @@ void CmainDlg::OnTimerVersion()
     BaloonPopup(title, message, NIIF_INFO, MSIP_BALOON_WEBSITE);
 }
 
+void CmainDlg::UpdateAudioFocus()
+{
+    msip_release_idle_microphone();
+    const bool active = msip_call_in_progress();
+    if (!audioFocus.Update(active, accountSettings.callAudioMode,
+        std::wstring(accountSettings.callAudioApps.GetString())) && !audioFocusErrorShown) {
+        audioFocusErrorShown = true;
+        BaloonPopup(_T("Call audio"),
+            _T("Could not start audio muting. Keep MicroSIPAudioGuard.exe beside microsip.exe."), NIIF_WARNING);
+    }
+    if (!active) audioFocusErrorShown = false;
+}
+
 void CmainDlg::OnTimer(UINT_PTR TimerVal)
 {
+    if (TimerVal == IDT_TIMER_AUDIO_FOCUS) {
+        UpdateAudioFocus();
+        return;
+    }
     if (TimerVal == IDT_TIMER_AUTOANSWER) {
         KillTimer(IDT_TIMER_AUTOANSWER);
         if (autoAnswerTimerCallId != PJSUA_INVALID_ID) {
@@ -3137,7 +3164,7 @@ void CmainDlg::OnTimer(UINT_PTR TimerVal)
             pjmedia_aud_dev_refresh();
             UpdateSoundDevicesIds();
             if (is_active) {
-                msip_set_sound_device(is_ring ? msip_audio_ring : msip_audio_output, true);
+                msip_set_sound_device(is_ring ? msip_audio_ring : msip_audio_output, true, !msip_call_in_progress());
             }
 #ifdef _GLOBAL_VIDEO
             if (!accountSettings.disableVideo) {
@@ -3476,6 +3503,9 @@ void CmainDlg::PJCreateRaw()
 
     // Set snd devices
     UpdateSoundDevicesIds();
+    // Bridge connections may open sound before an app media callback. Their
+    // initial/default mode must therefore be safe for unanswered ringing.
+    msip_release_idle_microphone();
 
     PJAudioCodecs();
 #ifdef _GLOBAL_VIDEO
@@ -3747,6 +3777,7 @@ void CmainDlg::UpdateSoundDevicesIds()
 
 void CmainDlg::PJDestroy(bool exit)
 {
+    audioFocus.Stop();
     if (!is_pjsua_running()) {
         return;
     }
@@ -4944,13 +4975,10 @@ void CmainDlg::PlayerPlay(CString filename, bool noLoop, bool inCall, bool isAA)
                         stopCallback = true;
                     }
                 }
-                if (
-                    (!tone_gen && pjsua_conf_get_active_ports() <= 2)
-                    ||
-                    (tone_gen && pjsua_conf_get_active_ports() <= 3)
-                    ) {
-                    msip_set_sound_device(inCall ? msip_audio_output : msip_audio_ring);
-                }
+                // Incoming SDP can create bridge ports before the ringtone.
+                // Port counts say nothing about permission to use capture.
+                msip_set_sound_device(msip_call_in_progress() || inCall
+                    ? msip_audio_output : msip_audio_ring, false, true);
                 pjsua_conf_port_id conf_port_id = pjsua_player_get_conf_port(player_id);
                 if (inCall) {
                     pjsua_conf_adjust_rx_level(conf_port_id, 0.4);
@@ -5073,6 +5101,12 @@ LRESULT CmainDlg::onCallAnswer(WPARAM wParam, LPARAM lParam)
                 if (accountSettings.singleMode) {
                     msip_call_hangup_all_noincoming();
                 }
+                call_user_data* answering_data = (call_user_data*)pjsua_call_get_user_data(call_id);
+                if (!answering_data) {
+                    answering_data = new call_user_data(call_id);
+                    pjsua_call_set_user_data(call_id, answering_data);
+                }
+                InterlockedExchange(&answering_data->audioAccepted, TRUE);
                 msip_set_sound_device(msip_audio_output);
                 pjsua_call_setting call_setting;
                 pjsua_call_setting_default(&call_setting);
@@ -5089,6 +5123,10 @@ LRESULT CmainDlg::onCallAnswer(WPARAM wParam, LPARAM lParam)
 #endif
                 if (pjsua_call_answer2(call_id, &call_setting, 200, NULL, NULL) == PJ_SUCCESS) {
                     callIdIncomingIgnore = MSIP::PjToStr(&call_info.call_id);
+                }
+                else {
+                    InterlockedExchange(&answering_data->audioAccepted, FALSE);
+                    msip_release_idle_microphone();
                 }
                 PlayerStop();
                 bool restore = true;
@@ -5107,7 +5145,7 @@ LRESULT CmainDlg::onCallAnswer(WPARAM wParam, LPARAM lParam)
                                     str = sipuri.user;
                                 }
                                 else {
-                                    str.Format(_T("%s – %s"), name, sipuri.user);
+                                    str.Format(_T("%s \u2013 %s"), name, sipuri.user);
                                 }
                                 BaloonPopup(Translate(_T("Auto Answer")), str, NIIF_INFO);
                             }
@@ -5308,13 +5346,13 @@ void CmainDlg::OnSize(UINT type, int w, int h)
 
 void CmainDlg::SetupJumpList()
 {
-    JumpList jl(_T(_GLOBAL_NAME_VISIBLE));
+    JumpList jl(MicroSipAppUserModelId());
     jl.AddTasks();
 }
 
 void CmainDlg::RemoveJumpList()
 {
-    JumpList jl(_T(_GLOBAL_NAME_VISIBLE));
+    JumpList jl(MicroSipAppUserModelId());
     jl.DeleteJumpList();
 }
 

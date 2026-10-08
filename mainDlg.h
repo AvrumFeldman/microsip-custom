@@ -1,3 +1,4 @@
+// Modified 2026-10-08 for MicroSIP Custom: call audio focus lifecycle.
 /*
  * Copyright (C) 2011-2026 MicroSIP (http://www.microsip.org)
  *
@@ -19,6 +20,7 @@
 #pragma once
 
 #include "define.h"
+#include "AudioFocus.h"
 #include "json.h"
 #include "addons.h"
 #include <pjsua-lib/pjsua.h>
@@ -55,6 +57,9 @@ class CmainDlg : public CBaseDialog
 public:
     CmainDlg(CWnd* pParent = NULL);	// standard constructor
     ~CmainDlg();
+    void UpdateAudioFocus();
+    AudioFocus audioFocus;
+    bool audioFocusErrorShown = false;
 
     // Dialog Data
     enum { IDD = IDD_MAIN };

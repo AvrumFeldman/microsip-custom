@@ -1,3 +1,4 @@
+// Modified 2026-10-08 for MicroSIP Custom: attended-transfer lifecycle and menu handlers.
 /*
  * Copyright (C) 2011-2026 MicroSIP (http://www.microsip.org)
  *
@@ -64,7 +65,7 @@ public:
 	bool CallCheck();
 	pjsua_call_id CurrentCallId();
 	void Call(BOOL hasVideo = FALSE);
-    pjsua_call_id PerformCall(CString number, bool hasVideo = false, pj_status_t* pStatus = nullptr, call_user_data* user_data = nullptr);
+    pjsua_call_id PerformCall(CString number, bool hasVideo = false, pj_status_t* pStatus = nullptr, call_user_data* user_data = nullptr, bool consultation = false);
 	void AddMessage(MessagesContact* messagesContact, CString message, int type = MSIP_MESSAGE_TYPE_SYSTEM, BOOL blockForeground = FALSE, CTime* pTime = NULL);
 	MessagesContact* GetMessageContact(int i = -1);
 	MessagesContact* GetMessageContactInCall();
@@ -78,6 +79,7 @@ public:
 	bool CallAction(int action, CString number, pjsua_call_id forward_call_id = PJSUA_INVALID_ID);
 	void Merge(pjsua_call_id call_id);
 	void Separate(pjsua_call_id call_id);
+	void OnAttendedTransferResult(pjsua_call_id call_id, int status);
 
 	CClosableTabCtrl* tab;
 	MessagesContact* lastCall;
@@ -94,7 +96,19 @@ private:
     CClosableTabCtrl m_messagesTab;
 
     BOOL CloseTab(int i, BOOL safe = FALSE);
-    MessagesContact* StartCall(bool hasVideo = false, call_user_data* user_data = NULL);
+    MessagesContact* StartCall(bool hasVideo = false, call_user_data* user_data = NULL, bool consultation = false);
+	bool StartAttendedTransfer(pjsua_call_id source, CString number);
+	void ResumeTransferSource();
+	bool TransferCallInfo(pjsua_call_id id, const CString& dialog, pjsua_call_info& info);
+	void ClearAttendedTransfer();
+	pjsua_call_id transferSource = PJSUA_INVALID_ID;
+	pjsua_call_id transferConsultation = PJSUA_INVALID_ID;
+	CString transferSourceDialog;
+	CString transferConsultationDialog;
+	bool transferCompleting = false;
+	CString transferPendingNumber;
+	ULONGLONG transferHoldDeadline = 0;
+	bool transferCancelPending = false;
 
 	CMenu menuTransfer;
 	CMenu menuConference;
@@ -103,6 +117,7 @@ private:
 
 protected:
 	afx_msg void OnDestroy();
+	afx_msg void OnTimer(UINT_PTR timer);
 	virtual BOOL OnInitDialog();
 	virtual void PostNcDestroy();
 	virtual void DoDataExchange(CDataExchange* pDX);
@@ -125,6 +140,7 @@ public:
 	afx_msg void OnBnClickedVideoCall();
 	afx_msg void OnBnClickedActions(bool isConference = false);
 	afx_msg void OnBnClickedTransfer();
+	afx_msg void OnTransferDropdown(NMHDR* header, LRESULT* result);
 	afx_msg void OnBnClickedConference();
 	afx_msg void OnBnClickedHold();
 	afx_msg void OnBnClickedEnd();
@@ -138,6 +154,8 @@ public:
 	afx_msg void OnTransfer();
 	afx_msg void OnAttendedTransfer();
 	afx_msg void OnAttendedTransferRange(UINT nID);
+	afx_msg void OnCompleteAttendedTransfer();
+	afx_msg void OnCancelAttendedTransfer();
 	afx_msg void OnConference();
 	afx_msg void OnMerge(UINT nID);
 	afx_msg void OnMergeAll();

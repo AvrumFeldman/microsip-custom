@@ -1,4 +1,5 @@
 ﻿<?xml version="1.0" encoding="utf-8"?>
+<!-- Modified 2026-10-08 for MicroSIP Custom: redistributable helpers and custom build sources. -->
 <Project DefaultTargets="Build" ToolsVersion="14.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
   <ItemGroup Label="ProjectConfigurations">
     <ProjectConfiguration Include="Debug|ARM64">
@@ -364,9 +365,11 @@
     <ClCompile Include="Data\ContactsRepository.cpp" />
     <ClCompile Include="Data\Database.cpp" />
     <ClCompile Include="Dialer.cpp" />
+    <ClCompile Include="DialPlan.cpp" />
     <ClCompile Include="ExportDlg.cpp" />
     <ClCompile Include="FeatureCodesDlg.cpp" />
     <ClCompile Include="global.cpp" />
+    <ClCompile Include="AudioFocus.cpp" />
     <ClCompile Include="IconButton.cpp" />
     <ClCompile Include="ImportDlg.cpp" />
     <ClCompile Include="jumplist.cpp" />
@@ -402,7 +405,6 @@
     <ClCompile Include="lib\langpack.cpp" />
     <ClCompile Include="LevelsSliderCtrl.cpp" />
     <ClCompile Include="lib\Markup.cpp" />
-    <ClCompile Include="lib\MessageBoxX.cpp" />
     <ClCompile Include="lib\ModelessMessageBox.cpp" />
     <ClCompile Include="lib\MSIP.cpp" />
     <ClCompile Include="lib\StdioFileEx.cpp" />
@@ -452,6 +454,7 @@
     <ClInclude Include="Data\IContactsRepository.h" />
     <ClInclude Include="define.h" />
     <ClInclude Include="Dialer.h" />
+    <ClInclude Include="DialPlan.h" />
     <ClInclude Include="Domain\Call.h" />
     <ClInclude Include="Domain\Contact.h" />
     <ClInclude Include="Domain\Shortcut.h" />
@@ -459,6 +462,7 @@
     <ClInclude Include="ExportDlg.h" />
     <ClInclude Include="FeatureCodesDlg.h" />
     <ClInclude Include="global.h" />
+    <ClInclude Include="AudioFocus.h" />
     <ClInclude Include="IconButton.h" />
     <ClInclude Include="ImportDlg.h" />
     <ClInclude Include="jumplist.h" />
@@ -473,7 +477,6 @@
     <ClInclude Include="lib\langpack.h" />
     <ClInclude Include="LevelsSliderCtrl.h" />
     <ClInclude Include="lib\Markup.h" />
-    <ClInclude Include="lib\MessageBoxX.h" />
     <ClInclude Include="lib\ModelessMessageBox.h" />
     <ClInclude Include="lib\MSIP.h" />
     <ClInclude Include="lib\StdioFileEx.h" />

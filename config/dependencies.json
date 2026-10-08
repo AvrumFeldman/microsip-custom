@@ -1,0 +1,37 @@
+{
+  "pjsipCommit": "7de6e686fee1642f5443a3f39f0e5ad5e478a117",
+  "pjsipTag": "2.15.1",
+  "vcpkgCommit": "2750401336fb7c95f6619657a46a7e798661341c",
+  "portableSounds": {
+    "url": "https://www.microsip.org/download/MicroSIP-3.22.16.zip",
+    "filename": "MicroSIP-3.22.16.zip",
+    "sha256": "b269465205df18de018c2d78ca9d1107b396460e1e8d257c443e75fe99be42f4"
+  },
+  "sourceArchives": [
+    {
+      "filename": "openssl-openssl-openssl-3.6.5.tar.gz",
+      "url": "https://github.com/openssl/openssl/archive/openssl-3.6.5.tar.gz",
+      "sha512": "40f0b346a9a5cf4cb37f1ecebdc74750c39a95783710061bfac58964883b0831543ecee0aee9f747ea093781b13c58a543b0b935d222519e3cb19648d77a0276"
+    },
+    {
+      "filename": "xiph-opus-v1.6.1.tar.gz",
+      "url": "https://github.com/xiph/opus/archive/v1.6.1.tar.gz",
+      "sha512": "b9a504f8576c977df57caee808412ab95e7424e9a64e3dd4045f05616c3ed58706bc3549195b61e25721e299547509d15206d246d96f1a307b82562b703b412c"
+    },
+    {
+      "filename": "sqlite-autoconf-3530400.tar.gz",
+      "url": "https://sqlite.org/2026/sqlite-autoconf-3530400.tar.gz",
+      "sha512": "c24374e9393a943157f533f96e89e6c5743e5f5aad169d8393cff3088ca5ccbe5cc0561681ace49c349d0fe402298ee2624d319f422967247ce0792e3b3aa01e"
+    },
+    {
+      "filename": "SRombauts-SQLiteCpp-3.3.3.tar.gz",
+      "url": "https://github.com/SRombauts/SQLiteCpp/archive/3.3.3.tar.gz",
+      "sha512": "23193108faaca4c1c7b0a05178bfdbb772a4e14dc145af1b3a7b35efe05a94b07200bdd5551afde44ab5eb3c6aeabbd70cfb0d710dc2750a8280e06fba94c494"
+    }
+  ],
+  "sqliteCanonicalSource": {
+    "url": "https://sqlite.org/2026/sqlite-src-3530400.zip",
+    "filename": "sqlite-src-3530400.zip",
+    "sha256": "d18fa15aec74d8c17e1463f861095adc01b5ad190256acb4f91d22f0368d232b"
+  }
+}

@@ -1,3 +1,4 @@
+// Modified 2026-10-08 for MicroSIP Custom: transfer dropdown event handling.
 /*
  * Copyright (C) 2011-2026 MicroSIP (http://www.microsip.org)
  *
@@ -160,6 +161,7 @@ public:
     afx_msg void OnBnClickedMessage();
     afx_msg void OnBnClickedHold();
     afx_msg void OnBnClickedTransfer();
+    afx_msg void OnTransferDropdown(NMHDR* header, LRESULT* result);
     afx_msg void OnBnClickedEnd();
     afx_msg void OnCbnEditchangeComboAddr();
     afx_msg void OnCbnSelchangeComboAddr();

@@ -1,0 +1,7 @@
+/build/
+/out/
+/dist/
+/packages/
+*.user
+*.VC.db
+/.vs/

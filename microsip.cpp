@@ -1,3 +1,4 @@
+// Modified 2026-10-08 for MicroSIP Custom: set custom taskbar identity and class icon before creating windows.
 /*
  * Copyright (C) 2011-2026 MicroSIP (http://www.microsip.org)
  *
@@ -24,6 +25,7 @@
 #include "define.h"
 #include "settings.h"
 #include "langpack.h"
+#include "jumplist.h"
 
 #include "Strsafe.h"
 
@@ -632,6 +634,8 @@ BOOL CALLBACK MsipEnumWindowsProc(HWND hWnd, LPARAM lParam)
 BOOL CmicrosipApp::InitInstance()
 {
     try {
+        // Establish shell identity before any UI or Jump List is created.
+        SetCurrentProcessExplicitAppUserModelID(MicroSipAppUserModelId());
         CString strCommandLine = theApp.m_lpCmdLine;
         accountSettings.Init();
 
@@ -760,6 +764,7 @@ BOOL CmicrosipApp::InitInstance()
             return FALSE;
         }
         wc.lpszClassName = _T(_GLOBAL_NAME);
+        wc.hIcon = LoadIcon(IDI_MAINFRAME);
         // Register this class so that MFC can use it.
         if (!::AfxRegisterClass(&wc)) {
             AfxMessageBox(_T("RegisterClass failed. Please contact the developer."));

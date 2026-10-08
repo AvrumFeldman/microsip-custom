@@ -1,3 +1,4 @@
+// Modified 2026-10-08 for MicroSIP Custom: separate blind and attended transfer workflows.
 /*
  * Copyright (C) 2011-2026 MicroSIP (http://www.microsip.org)
  *
@@ -136,10 +137,10 @@ void Transfer::LoadFromContacts(Contact *selectedContact)
                 CString& type = itemsType[j];
                 CString str;
                 if (type.IsEmpty()) {
-                    str.Format(_T("%s – %s"), contact->name, number);
+                    str.Format(_T("%s \u2013 %s"), contact->name, number);
                 }
                 else {
-                    str.Format(_T("%s – %s %s"), contact->name, type, number);
+                    str.Format(_T("%s \u2013 %s %s"), contact->name, type, number);
                 }
                 int n = combobox->AddString(str);
                 CString* pNumber = new CString(number);
@@ -250,13 +251,6 @@ void Transfer::SetAction(msip_action action, pjsua_call_id call_id)
 	callId = call_id;
 	bool buttons = false;
 	if (action == MSIP_ACTION_TRANSFER || action == MSIP_ACTION_ATTENDED_TRANSFER || action == MSIP_ACTION_FORWARD) {
-		if (action == MSIP_ACTION_TRANSFER || action == MSIP_ACTION_ATTENDED_TRANSFER) {
-			if (accountSettings.enableFeatureCodeAT
-				&& !accountSettings.featureCodeAT.IsEmpty()
-				) {
-				buttons = true;
-			}
-		}
 		if (buttons || action == MSIP_ACTION_FORWARD) {
 			SetWindowText(Translate(_T("Call Transfer")));
 		}
@@ -290,8 +284,7 @@ bool Transfer::Action(msip_action action)
 		number = *(CString*)combobox->GetItemData(i);
 	}
 	if (!number.IsEmpty()) {
-		mainDlg->messagesDlg->CallAction(action, number, callId);
-		return true;
+		return mainDlg->messagesDlg->CallAction(action, number, callId);
 	}
 	return false;
 }

@@ -1,3 +1,4 @@
+// Modified 2026-10-08 for MicroSIP Custom: custom audio settings and public-source key handling.
 /*
  * Copyright (C) 2011-2026 MicroSIP (http://www.microsip.org)
  *
@@ -48,7 +49,7 @@ bool IniDecrypt(CString& str)
         CByteArray arPassword;
         MSIP::String2Bin(str, &arPassword);
         MFC::CCrypto crypto;
-        CString key = (LPCTSTR)_GLOBAL_KEY;
+        CString key = _T(_GLOBAL_KEY);
         if (crypto.DeriveKey(key)) {
             try {
                 if (crypto.Decrypt(arPassword, str)) {
@@ -69,7 +70,7 @@ CString IniEncrypt(CString str)
     CString res;
     MFC::CCrypto crypto;
     CByteArray arPassword;
-    CString key = (LPCTSTR)_GLOBAL_KEY;
+    CString key = _T(_GLOBAL_KEY);
     if (!str.IsEmpty() && crypto.DeriveKey(key)
         && crypto.Encrypt(str, arPassword)
         ) {
@@ -702,6 +703,11 @@ void AccountSettings::SettingsLoad(CString filename)
     ptr = recordingFormat.GetBuffer(256);
     GetPrivateProfileString(section, _T("recordingFormat"), NULL, ptr, 256, iniFileRec);
     recordingFormat.ReleaseBuffer();
+#ifdef MICROSIP_AUDIO_ONLY
+    // The published PJSIP source supports WAV; MicroSIP's private MP3 writer
+    // is not part of its source archive. Never silently fail to record.
+    recordingFormat = _T("wav");
+#endif
 
     ptr = str.GetBuffer(256);
     GetPrivateProfileString(section, _T("autoRecording"), NULL, ptr, 256, iniFileRec);
@@ -812,6 +818,12 @@ void AccountSettings::SettingsLoad(CString filename)
     GetPrivateProfileString(section, _T("localDTMF"), _T("1"), ptr, 256, filename);
     str.ReleaseBuffer();
     localDTMF = _wtoi(str);
+
+    callAudioMode = GetPrivateProfileInt(section, _T("callAudioMode"), 0, filename);
+    if (callAudioMode < 0 || callAudioMode > 2) callAudioMode = 0;
+    ptr = callAudioApps.GetBuffer(2048);
+    GetPrivateProfileString(section, _T("callAudioApps"), _T(""), ptr, 2048, filename);
+    callAudioApps.ReleaseBuffer();
 
     ptr = str.GetBuffer(256);
     GetPrivateProfileString(section, _T("enableLog"), NULL, ptr, 256, filename);
@@ -1167,6 +1179,9 @@ void AccountSettings::SettingsSave(CString filename)
     WritePrivateProfileString(section, _T("enableMediaButtons"), enableMediaButtons ? _T("1") : _T("0"), filename);
     WritePrivateProfileString(section, _T("headsetSupport"), headsetSupport ? _T("1") : _T("0"), filename);
     WritePrivateProfileString(section, _T("localDTMF"), localDTMF ? _T("1") : _T("0"), filename);
+    str.Format(_T("%d"), callAudioMode);
+    WritePrivateProfileString(section, _T("callAudioMode"), str, filename);
+    WritePrivateProfileString(section, _T("callAudioApps"), callAudioApps, filename);
     WritePrivateProfileString(section, _T("enableLog"), enableLog ? _T("1") : _T("0"), filename);
     WritePrivateProfileString(section, _T("bringToFrontOnIncoming"), bringToFrontOnIncoming ? _T("1") : _T("0"), filename);
     WritePrivateProfileString(section, _T("enableLocalAccount"), enableLocalAccount ? _T("1") : _T("0"), filename);

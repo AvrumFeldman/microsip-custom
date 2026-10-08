@@ -1,3 +1,4 @@
+// Modified 2026-10-08 for MicroSIP Custom: transfer dropdown and single-call conference controls.
 /*
  * Copyright (C) 2011-2026 MicroSIP (http://www.microsip.org)
  *
@@ -556,7 +557,10 @@ BOOL Dialer::OnInitDialog()
     AutoMove(IDC_KEY_GRATE, 67, height3, 33, height);
     AutoMove(IDC_CLEAR, 67, height4, 33, height);
 
-#ifdef _GLOBAL_VIDEO
+#ifdef MICROSIP_AUDIO_ONLY
+    AutoMove(IDC_CALL, 0, 85, 100, 15);
+    GetDlgItem(IDC_MESSAGE)->ShowWindow(SW_HIDE);
+#elif defined(_GLOBAL_VIDEO)
     AutoMove(IDC_VIDEO_CALL, 0, 85, 14, 15);
     AutoMove(IDC_CALL, 14, 85, 72, 15);
     AutoMove(IDC_MESSAGE, 86, 85, 14, 15);
@@ -712,6 +716,7 @@ BEGIN_MESSAGE_MAP(Dialer, CBaseDialog)
     ON_BN_CLICKED(IDC_MESSAGE, OnBnClickedMessage)
     ON_BN_CLICKED(IDC_HOLD, OnBnClickedHold)
     ON_BN_CLICKED(IDC_TRANSFER, OnBnClickedTransfer)
+    ON_NOTIFY(BCN_DROPDOWN, IDC_TRANSFER, OnTransferDropdown)
     ON_BN_CLICKED(IDC_END, OnBnClickedEnd)
     ON_CBN_EDITCHANGE(IDC_NUMBER, &Dialer::OnCbnEditchangeComboAddr)
     ON_CBN_SELCHANGE(IDC_NUMBER, &Dialer::OnCbnSelchangeComboAddr)
@@ -1215,7 +1220,9 @@ void Dialer::UpdateCallButton(BOOL forse, int callsCount)
 #ifdef _GLOBAL_VIDEO
                 GetDlgItem(IDC_VIDEO_CALL)->ShowWindow(SW_SHOW);
 #endif
+#ifndef MICROSIP_AUDIO_ONLY
                 GetDlgItem(IDC_MESSAGE)->ShowWindow(SW_SHOW);
+#endif
             }
         }
         state = callsCount || len ? true : false;
@@ -1233,12 +1240,18 @@ void Dialer::UpdateCallButton(BOOL forse, int callsCount)
         GetDlgItem(IDC_VIDEO_CALL)->EnableWindow(state);
     }
 #endif
+#ifdef MICROSIP_AUDIO_ONLY
+    // Preserve messaging code for other builds while keeping this dialer for calls.
+    GetDlgItem(IDC_MESSAGE)->ShowWindow(SW_HIDE);
+    GetDlgItem(IDC_MESSAGE)->EnableWindow(FALSE);
+#else
     if (accountSettings.disableMessaging) {
         GetDlgItem(IDC_MESSAGE)->EnableWindow(false);
     }
     else {
         GetDlgItem(IDC_MESSAGE)->EnableWindow(state);
     }
+#endif
     CButton* buttonRedial = (CButton*)GetDlgItem(IDC_REDIAL);
     CButton* buttonDelete = (CButton*)GetDlgItem(IDC_DELETE);
     if (!state) {
@@ -1325,7 +1338,13 @@ void Dialer::OnBnClickedHold()
 
 void Dialer::OnBnClickedTransfer()
 {
-    mainDlg->OpenTransferDlg(mainDlg, MSIP_ACTION_TRANSFER);
+    mainDlg->messagesDlg->OnBnClickedTransfer();
+}
+
+void Dialer::OnTransferDropdown(NMHDR* header, LRESULT* result)
+{
+    OnBnClickedTransfer();
+    *result = 0;
 }
 
 void Dialer::OnBnClickedEnd()
@@ -1662,12 +1681,7 @@ void Dialer::OnBnClickedAC()
 
 void Dialer::OnBnClickedConf()
 {
-    if (accountSettings.singleMode) {
-        mainDlg->OpenTransferDlg(mainDlg, MSIP_ACTION_INVITE);
-    }
-    else {
-        mainDlg->messagesDlg->OnBnClickedConference();
-    }
+    mainDlg->messagesDlg->OnBnClickedConference();
 }
 
 void Dialer::OnBnClickedRec()

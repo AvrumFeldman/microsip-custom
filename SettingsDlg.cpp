@@ -1,3 +1,4 @@
+// Modified 2026-10-08 for MicroSIP Custom: optional call audio muting and WAV recording controls.
 /*
  * Copyright (C) 2011-2026 MicroSIP (http://www.microsip.org)
  *
@@ -348,6 +349,14 @@ BOOL SettingsDlg::OnInitDialog()
     ((CButton*)GetDlgItem(IDC_SETTINGS_MEDIA_BUTTONS))->SetCheck(accountSettings.enableMediaButtons);
     ((CButton*)GetDlgItem(IDC_SETTINGS_HID))->SetCheck(accountSettings.headsetSupport);
     ((CButton*)GetDlgItem(IDC_SETTINGS_LOCAL_DTMF))->SetCheck(accountSettings.localDTMF);
+    combobox = (CComboBox*)GetDlgItem(IDC_SETTINGS_CALL_AUDIO_MODE);
+    combobox->AddString(_T("Leave other audio unchanged"));
+    combobox->AddString(_T("Mute all other apps"));
+    combobox->AddString(_T("Mute selected apps"));
+    combobox->SetCurSel(accountSettings.callAudioMode);
+    ((CEdit*)GetDlgItem(IDC_SETTINGS_CALL_AUDIO_APPS))->SetLimitText(2047);
+    SetDlgItemText(IDC_SETTINGS_CALL_AUDIO_APPS, accountSettings.callAudioApps);
+    OnCallAudioModeChanged();
     ((CButton*)GetDlgItem(IDC_SETTINGS_SINGLE_MODE))->SetCheck(accountSettings.singleMode);
     ((CButton*)GetDlgItem(IDC_SETTINGS_ENABLE_LOG))->SetCheck(accountSettings.enableLog);
     ((CButton*)GetDlgItem(IDC_SETTINGS_BRING_TO_FRONT))->SetCheck(accountSettings.bringToFrontOnIncoming);
@@ -422,6 +431,8 @@ void SettingsDlg::PostNcDestroy()
 }
 
 BEGIN_MESSAGE_MAP(SettingsDlg, CThemeDialog)
+    ON_CBN_SELCHANGE(IDC_SETTINGS_CALL_AUDIO_MODE, &SettingsDlg::OnCallAudioModeChanged)
+    ON_BN_CLICKED(IDC_SETTINGS_CALL_AUDIO_BROWSE, &SettingsDlg::OnBrowseCallAudioApp)
     ON_WM_CREATE()
     ON_WM_CLOSE()
     ON_WM_DESTROY()
@@ -493,6 +504,26 @@ void SettingsDlg::OnBnClickedOk()
 
     mainDlg->PJDestroy();
     PostMessage(UM_UPDATE_SETTINGS, 0, 0); // Callbacks must be processed before a new session starts
+}
+
+void SettingsDlg::OnCallAudioModeChanged()
+{
+    const BOOL selected = ((CComboBox*)GetDlgItem(IDC_SETTINGS_CALL_AUDIO_MODE))->GetCurSel() == 2;
+    GetDlgItem(IDC_SETTINGS_CALL_AUDIO_APPS)->EnableWindow(selected);
+    GetDlgItem(IDC_SETTINGS_CALL_AUDIO_BROWSE)->EnableWindow(selected);
+}
+
+void SettingsDlg::OnBrowseCallAudioApp()
+{
+    CFileDialog dialog(TRUE, _T("exe"), NULL, OFN_FILEMUSTEXIST | OFN_NOCHANGEDIR,
+        _T("Applications (*.exe)|*.exe||"), this);
+    if (dialog.DoModal() != IDOK) return;
+    CString apps;
+    GetDlgItemText(IDC_SETTINGS_CALL_AUDIO_APPS, apps);
+    apps.Trim();
+    if (!apps.IsEmpty()) apps += _T("; ");
+    apps += dialog.GetFileName();
+    SetDlgItemText(IDC_SETTINGS_CALL_AUDIO_APPS, apps.Left(2047));
 }
 
 LRESULT SettingsDlg::OnUpdateSettings(WPARAM wParam, LPARAM lParam)
@@ -617,6 +648,9 @@ LRESULT SettingsDlg::OnUpdateSettings(WPARAM wParam, LPARAM lParam)
     accountSettings.enableMediaButtons = ((CButton*)GetDlgItem(IDC_SETTINGS_MEDIA_BUTTONS))->GetCheck();
     accountSettings.headsetSupport = ((CButton*)GetDlgItem(IDC_SETTINGS_HID))->GetCheck();
     accountSettings.localDTMF = ((CButton*)GetDlgItem(IDC_SETTINGS_LOCAL_DTMF))->GetCheck();
+    accountSettings.callAudioMode = ((CComboBox*)GetDlgItem(IDC_SETTINGS_CALL_AUDIO_MODE))->GetCurSel();
+    GetDlgItemText(IDC_SETTINGS_CALL_AUDIO_APPS, accountSettings.callAudioApps);
+    accountSettings.callAudioApps.Trim();
     accountSettings.singleMode = ((CButton*)GetDlgItem(IDC_SETTINGS_SINGLE_MODE))->GetCheck();
     accountSettings.enableLog = ((CButton*)GetDlgItem(IDC_SETTINGS_ENABLE_LOG))->GetCheck();
     accountSettings.bringToFrontOnIncoming = ((CButton*)GetDlgItem(IDC_SETTINGS_BRING_TO_FRONT))->GetCheck();

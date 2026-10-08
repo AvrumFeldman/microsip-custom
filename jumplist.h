@@ -1,3 +1,4 @@
+// Modified 2026-10-08 for MicroSIP Custom: stable application ID for custom taskbar grouping.
 /*
  * Copyright (C) 2011-2026 MicroSIP (http://www.microsip.org)
  *
@@ -19,6 +20,16 @@
 #pragma once
 
 #include <string>
+
+// Shell identity is stable across upgrades and must not contain spaces.
+inline const wchar_t* MicroSipAppUserModelId()
+{
+#ifdef MICROSIP_AUDIO_ONLY
+    return L"AvrumFeldman.MicroSIPCustom";
+#else
+    return L"MicroSIP";
+#endif
+}
 
 class JumpList
 {

@@ -1,4 +1,5 @@
-﻿/*
+// Modified 2026-10-08 for MicroSIP Custom: single-call attended transfers and participant removal.
+/*
  * Copyright (C) 2011-2026 MicroSIP (http://www.microsip.org)
  *
  * This program is free software; you can redistribute it and/or modify
@@ -23,6 +24,8 @@
 #include "settings.h"
 #include "Transfer.h"
 #include "langpack.h"
+
+static const UINT_PTR kTransferHoldTimer = 0x4D534154;
 
 static DWORD CALLBACK MEditStreamOutCallback(DWORD_PTR dwCookie, LPBYTE pbBuff, LONG cb, LONG* pcb)
 {
@@ -192,6 +195,7 @@ BOOL MessagesDlg::OnInitDialog()
 
 void MessagesDlg::OnDestroy()
 {
+    ClearAttendedTransfer();
     //mainDlg->messagesDlg = nullptr;
     CBaseDialog::OnDestroy();
 }
@@ -224,10 +228,14 @@ BEGIN_MESSAGE_MAP(MessagesDlg, CBaseDialog)
     ON_MESSAGE(UM_CLOSETAB, &MessagesDlg::OnCloseTab)
     ON_BN_CLICKED(IDC_CALL_END, &MessagesDlg::OnBnClickedCallEnd)
     ON_BN_CLICKED(IDC_VIDEO_CALL, &MessagesDlg::OnBnClickedVideoCall)
+    ON_WM_TIMER()
     ON_BN_CLICKED(IDC_TRANSFER, &MessagesDlg::OnBnClickedTransfer)
+    ON_NOTIFY(BCN_DROPDOWN, IDC_TRANSFER, OnTransferDropdown)
     ON_BN_CLICKED(IDC_CONFERENCE, &MessagesDlg::OnBnClickedConference)
     ON_COMMAND(ID_TRANSFER, OnTransfer)
     ON_COMMAND(ID_ATTENDED_TRANSFER, OnAttendedTransfer)
+    ON_COMMAND(ID_COMPLETE_ATTENDED_TRANSFER, OnCompleteAttendedTransfer)
+    ON_COMMAND(ID_CANCEL_ATTENDED_TRANSFER, OnCancelAttendedTransfer)
     ON_COMMAND(ID_CONFERENCE, OnConference)
     ON_COMMAND(ID_SEPARATE, OnSeparate)
     ON_COMMAND(ID_SEPARATE_ALL, OnSeparateAll)
@@ -337,7 +345,7 @@ void MessagesDlg::SetWindowTitle(const MessagesContact& messagesContact)
     }
     else {
         CString str;
-        str.Format(_T("%s – %s"), messagesContact.name, messagesContact.numberShort);
+        str.Format(_T("%s \u2013 %s"), messagesContact.name, messagesContact.numberShort);
         SetWindowText(str);
     }
 }
@@ -550,7 +558,7 @@ void MessagesDlg::OnChangeTab(pjsua_call_info* p_call_info, call_user_data* user
             }
             else {
                 CString str;
-                str.Format(_T("%s – %s"), messagesContact->name, messagesContact->numberShort);
+                str.Format(_T("%s \u2013 %s"), messagesContact->name, messagesContact->numberShort);
                 mainDlg->pageDialer->SetNumber(str, 1);
             }
         }
@@ -668,7 +676,7 @@ BOOL MessagesDlg::CloseTab(int i, BOOL safe)
  * Deletes user_data if the call fails.
  * Warning: it may end other calls (close tabs and delete related objects)
  */
-pjsua_call_id MessagesDlg::PerformCall(CString number, bool hasVideo, pj_status_t* pStatus, call_user_data* user_data)
+pjsua_call_id MessagesDlg::PerformCall(CString number, bool hasVideo, pj_status_t* pStatus, call_user_data* user_data, bool consultation)
 {
     pjsua_acc_id acc_id = PJSUA_INVALID_ID;
     pj_str_t pj_uri = {};
@@ -686,7 +694,7 @@ pjsua_call_id MessagesDlg::PerformCall(CString number, bool hasVideo, pj_status_
             }
             break;
         }
-        if (accountSettings.singleMode) {
+        if (accountSettings.singleMode && !consultation) {
             if (!user_data || (!user_data->inConference && !user_data->hidden)) {
                 msip_call_hangup_all_noincoming();
             }
@@ -759,7 +767,7 @@ pjsua_call_id MessagesDlg::PerformCall(CString number, bool hasVideo, pj_status_
  * Deletes user_data if the call fails.
  * Warning: it may end other calls, close tabs and delete related objects
  */
-MessagesContact* MessagesDlg::StartCall(bool hasVideo, call_user_data* user_data)
+MessagesContact* MessagesDlg::StartCall(bool hasVideo, call_user_data* user_data, bool consultation)
 {
     MessagesContact* messagesContact = GetMessageContact();
     if (!messagesContact || messagesContact->callId != -1) {
@@ -797,7 +805,7 @@ MessagesContact* MessagesDlg::StartCall(bool hasVideo, call_user_data* user_data
     pj_status_t status = PJSIP_EINVALIDREQURI;
 
     CString address = messagesContact->aor + messagesContact->aorSuffix;
-    pjsua_call_id call_id = PerformCall(address, hasVideo, &status, user_data);
+    pjsua_call_id call_id = PerformCall(address, hasVideo, &status, user_data, consultation);
     if (call_id != PJSUA_INVALID_ID) {
         messagesContact = nullptr;
         bool ok = false;
@@ -869,6 +877,23 @@ void MessagesDlg::OnBnClickedCallEnd()
 
 void MessagesDlg::OnEndCall(pjsua_call_info* call_info, call_user_data* user_data)
 {
+    // Local hangup reaches here before the SIP BYE transaction finishes, too.
+    // Return to the original caller as soon as a consultation ends or fails.
+    if (call_info->id == transferConsultation) {
+        if (transferCompleting) {
+            // A successful Replaces can end this old leg before the final
+            // REFER NOTIFY arrives. Keep the original caller held until the
+            // transfer result decides whether to disconnect or resume it.
+            transferConsultation = PJSUA_INVALID_ID;
+            transferConsultationDialog.Empty();
+        }
+        else {
+            ResumeTransferSource();
+        }
+    }
+    else if (call_info->id == transferSource) {
+        ClearAttendedTransfer();
+    }
     SIPURI sipuri;
     ParseCallSIPURI(call_info, user_data, sipuri);
 
@@ -1643,12 +1668,7 @@ bool MessagesDlg::CallAction(int action, CString number, pjsua_call_id forward_c
                         msip_call_dial_dtmf(messagesContactSelected->callId, str, true);
                     }
                     else {
-                        if (!accountSettings.singleMode) {
-                            mainDlg->MakeCall(number);
-                        }
-                        else {
-                            AfxMessageBox(Translate(_T("Attended transfer is not available in single-call mode. Disable this mode or use PBX feature codes.")));
-                        }
+                        return StartAttendedTransfer(messagesContactSelected->callId, numberFormated);
                     }
                     return true;
                 }
@@ -1661,8 +1681,12 @@ bool MessagesDlg::CallAction(int action, CString number, pjsua_call_id forward_c
                     }
                     else {
                         char* buf = MSIP::WideCharToPjStr(numberFormated);
-                        pjsua_call_xfer(messagesContactSelected->callId, &pj_str(buf), NULL);
+                        pj_status_t status = pjsua_call_xfer(messagesContactSelected->callId, &pj_str(buf), NULL);
                         free(buf);
+                        if (status != PJ_SUCCESS) {
+                            MSIP::ShowErrorMessage(this, status);
+                            return false;
+                        }
                     }
                 }
                 return true;
@@ -1717,18 +1741,298 @@ void MessagesDlg::OnBnClickedHold()
 
 void MessagesDlg::OnBnClickedTransfer()
 {
-    if (accountSettings.enableFeatureCodeAT
-        && !accountSettings.featureCodeAT.IsEmpty()) {
-        mainDlg->OpenTransferDlg(this, MSIP_ACTION_TRANSFER);
+    if (!is_pjsua_running()) {
+        return;
     }
-    else {
-        OnBnClickedActions();
+    if (!accountSettings.singleMode && transferSource == PJSUA_INVALID_ID) {
+        OnBnClickedActions(); // retain transfer-to-an-existing-call in multi-call mode
+        return;
     }
+    MessagesContact* contact = GetMessageContact();
+    pjsua_call_info info;
+    if (!contact || contact->callId == PJSUA_INVALID_ID ||
+        pjsua_call_get_info(contact->callId, &info) != PJ_SUCCESS) {
+        return;
+    }
+    bool conference = false;
+    call_user_data* data = (call_user_data*)pjsua_call_get_user_data(info.id);
+    if (data) {
+        data->CS.Lock();
+        conference = data->inConference;
+        data->CS.Unlock();
+    }
+    CMenu menu;
+    menu.CreatePopupMenu();
+    const bool consulting = transferSource != PJSUA_INVALID_ID;
+    UINT disabled = conference || consulting ? MF_GRAYED : 0;
+    menu.AppendMenu(MF_STRING | disabled, ID_TRANSFER, Translate(_T("Blind Transfer")));
+    menu.AppendMenu(MF_STRING | disabled |
+        (info.state == PJSIP_INV_STATE_CONFIRMED ? 0 : MF_GRAYED),
+        ID_ATTENDED_TRANSFER, Translate(_T("Attended Transfer (consult first)")));
+    if (consulting) {
+        pjsua_call_info source, target;
+        bool ready = TransferCallInfo(transferSource, transferSourceDialog, source) &&
+            TransferCallInfo(transferConsultation, transferConsultationDialog, target) &&
+            source.state == PJSIP_INV_STATE_CONFIRMED && target.state == PJSIP_INV_STATE_CONFIRMED;
+        menu.AppendMenu(MF_SEPARATOR);
+        menu.AppendMenu(MF_STRING | (ready && !transferCompleting ? 0 : MF_GRAYED),
+            ID_COMPLETE_ATTENDED_TRANSFER, Translate(_T("Complete attended transfer")));
+        menu.AppendMenu(MF_STRING | (transferCompleting || transferCancelPending ? MF_GRAYED : 0),
+            ID_CANCEL_ATTENDED_TRANSFER, Translate(_T("Cancel consultation and return")));
+    }
+    CWnd* button = accountSettings.singleMode ?
+        mainDlg->pageDialer->GetDlgItem(IDC_TRANSFER) : GetDlgItem(IDC_TRANSFER);
+    CRect rect;
+    button->GetWindowRect(&rect);
+    UINT action = menu.TrackPopupMenu(TPM_RETURNCMD | TPM_LEFTALIGN | TPM_TOPALIGN,
+        rect.left, rect.bottom, this);
+    if (action) {
+        SendMessage(WM_COMMAND, action);
+    }
+}
+
+void MessagesDlg::OnTransferDropdown(NMHDR* header, LRESULT* result)
+{
+    OnBnClickedTransfer();
+    *result = 0;
 }
 
 void MessagesDlg::OnBnClickedConference()
 {
+    if (accountSettings.singleMode) {
+        if (!is_pjsua_running()) {
+            return;
+        }
+        // Snapshot both the slot and SIP dialog ID: a participant may leave
+        // while this menu is open, and PJSUA can reuse that slot for a new call.
+        pjsua_call_id ids[PJSUA_MAX_CALLS];
+        CString dialogs[PJSUA_MAX_CALLS];
+        unsigned count = PJSUA_MAX_CALLS;
+        CMenu menu, participants;
+        menu.CreatePopupMenu();
+        participants.CreatePopupMenu();
+        pjsua_call_info selected;
+        MessagesContact* contact = GetMessageContact();
+        bool canAdd = contact && pjsua_call_get_info(contact->callId, &selected) == PJ_SUCCESS &&
+            selected.state == PJSIP_INV_STATE_CONFIRMED && transferSource == PJSUA_INVALID_ID;
+        menu.AppendMenu(MF_STRING | (canAdd ? 0 : MF_GRAYED), ID_CONFERENCE, Translate(_T("Add participant")));
+        if (pjsua_enum_calls(ids, &count) == PJ_SUCCESS) {
+            for (unsigned i = 0; i < count; ++i) {
+                pjsua_call_info info;
+                if (!pjsua_call_is_active(ids[i]) || pjsua_call_get_info(ids[i], &info) != PJ_SUCCESS) {
+                    continue;
+                }
+                call_user_data* data = (call_user_data*)pjsua_call_get_user_data(ids[i]);
+                bool conference = false;
+                if (data) {
+                    data->CS.Lock();
+                    conference = data->inConference;
+                    data->CS.Unlock();
+                }
+                if (!conference) {
+                    continue;
+                }
+                SIPURI uri;
+                ParseCallSIPURI(&info, data, uri);
+                CString label = !uri.name.IsEmpty() ? uri.name : (!uri.user.IsEmpty() ? uri.user : uri.domain);
+                if (!uri.name.IsEmpty() && uri.name != uri.user) {
+                    CString address = uri.user.IsEmpty() ? uri.domain : uri.user + _T("@") + uri.domain;
+                    label.AppendFormat(_T(" (%s)"), address);
+                }
+                label.Replace(_T("&"), _T("&&"));
+                dialogs[i] = MSIP::PjToStr(&info.call_id);
+                participants.AppendMenu(MF_STRING, 1 + i, label);
+            }
+        }
+        menu.AppendMenu(MF_POPUP | (participants.GetMenuItemCount() ? 0 : MF_GRAYED),
+            (UINT_PTR)participants.GetSafeHmenu(), Translate(_T("Remove participant")));
+        CPoint point;
+        GetCursorPos(&point);
+        UINT action = menu.TrackPopupMenu(TPM_RETURNCMD, point.x, point.y, this);
+        menu.RemoveMenu(1, MF_BYPOSITION); // submenu owns its own lifetime
+        if (action == ID_CONFERENCE) {
+            OnConference();
+        }
+        else if (action > 0 && action <= count && !dialogs[action - 1].IsEmpty()) {
+            pjsua_call_info info;
+            if (TransferCallInfo(ids[action - 1], dialogs[action - 1], info)) {
+                msip_call_hangup_fast(info.id);
+            }
+        }
+        return;
+    }
     OnBnClickedActions(true);
+}
+
+bool MessagesDlg::TransferCallInfo(pjsua_call_id id, const CString& dialog, pjsua_call_info& info)
+{
+    return is_pjsua_running() && id != PJSUA_INVALID_ID && pjsua_call_is_active(id) &&
+        pjsua_call_get_info(id, &info) == PJ_SUCCESS && MSIP::PjToStr(&info.call_id) == dialog;
+}
+
+void MessagesDlg::ClearAttendedTransfer()
+{
+    KillTimer(kTransferHoldTimer);
+    transferSource = transferConsultation = PJSUA_INVALID_ID;
+    transferSourceDialog.Empty();
+    transferConsultationDialog.Empty();
+    transferCompleting = false;
+    transferPendingNumber.Empty();
+    transferCancelPending = false;
+}
+
+bool MessagesDlg::StartAttendedTransfer(pjsua_call_id source, CString number)
+{
+    pjsua_call_info info;
+    if (transferSource != PJSUA_INVALID_ID || !is_pjsua_running() ||
+        pjsua_call_get_info(source, &info) != PJ_SUCCESS || info.state != PJSIP_INV_STATE_CONFIRMED) {
+        return false;
+    }
+    if (info.media_status != PJSUA_CALL_MEDIA_LOCAL_HOLD) {
+        pj_status_t status = pjsua_call_set_hold(source, NULL);
+        if (status != PJ_SUCCESS) {
+            MSIP::ShowErrorMessage(this, status);
+            return false;
+        }
+    }
+    transferSource = source;
+    transferSourceDialog = MSIP::PjToStr(&info.call_id);
+    transferPendingNumber = number;
+    transferHoldDeadline = GetTickCount64() + 35000;
+    // Do not connect a consultation until hold is acknowledged. Otherwise
+    // the original party could hear it while the hold re-INVITE is pending.
+    SetTimer(kTransferHoldTimer, 100, NULL);
+    return true;
+}
+
+void MessagesDlg::OnTimer(UINT_PTR timer)
+{
+    if (timer != kTransferHoldTimer) {
+        CBaseDialog::OnTimer(timer);
+        return;
+    }
+    pjsua_call_info info;
+    if (!TransferCallInfo(transferSource, transferSourceDialog, info)) {
+        ClearAttendedTransfer();
+        return;
+    }
+    if (info.media_status != PJSUA_CALL_MEDIA_LOCAL_HOLD) {
+        if (GetTickCount64() < transferHoldDeadline) {
+            return;
+        }
+        bool canceled = transferCancelPending;
+        ResumeTransferSource();
+        if (!canceled) {
+            mainDlg->BaloonPopup(Translate(_T("Attended Transfer")),
+                Translate(_T("The original call could not be put on hold. The consultation was not started.")), NIIF_ERROR);
+        }
+        return;
+    }
+    KillTimer(kTransferHoldTimer);
+    if (transferCancelPending) {
+        ResumeTransferSource();
+        return;
+    }
+    // Preserve the complete destination, including domain and URI parameters.
+    CString number = transferPendingNumber;
+    transferPendingNumber.Empty();
+    if (!mainDlg->MessagesOpen(number, true, true)) {
+        ResumeTransferSource();
+        return;
+    }
+    MessagesContact* target = StartCall(false, nullptr, true);
+    if (!target) {
+        ResumeTransferSource();
+        return;
+    }
+    transferConsultation = target->callId;
+    transferConsultationDialog = target->callIdStr;
+    mainDlg->BaloonPopup(Translate(_T("Attended Transfer")),
+        Translate(_T("Speak to the destination, then choose Complete attended transfer from the Transfer menu. Cancel consultation returns to the original caller.")), NIIF_INFO);
+}
+
+void MessagesDlg::ResumeTransferSource()
+{
+    pjsua_call_info info;
+    bool active = TransferCallInfo(transferSource, transferSourceDialog, info);
+    ClearAttendedTransfer();
+    if (!active) {
+        return;
+    }
+    for (int i = 0; i < m_messagesTab.GetItemCount(); ++i) {
+        MessagesContact* contact = GetMessageContact(i);
+        if (contact && contact->callId == info.id) {
+            LONG_PTR result;
+            OnTcnSelchangingTab(NULL, &result);
+            m_messagesTab.SetCurSel(i);
+            OnChangeTab(&info);
+            break;
+        }
+    }
+    msip_call_unhold(&info);
+}
+
+void MessagesDlg::OnCompleteAttendedTransfer()
+{
+    pjsua_call_info source, target;
+    if (transferCompleting || !TransferCallInfo(transferSource, transferSourceDialog, source) ||
+        !TransferCallInfo(transferConsultation, transferConsultationDialog, target) ||
+        source.state != PJSIP_INV_STATE_CONFIRMED || target.state != PJSIP_INV_STATE_CONFIRMED) {
+        return;
+    }
+    pj_status_t status = pjsua_call_xfer_replaces(source.id, target.id, 0, NULL);
+    if (status == PJ_SUCCESS) {
+        transferCompleting = true;
+    }
+    else {
+        MSIP::ShowErrorMessage(this, status);
+    }
+}
+
+void MessagesDlg::OnCancelAttendedTransfer()
+{
+    if (transferCompleting) {
+        return;
+    }
+    if (!transferPendingNumber.IsEmpty()) {
+        // Wait for the in-flight hold response before sending an unhold.
+        transferCancelPending = true;
+        return;
+    }
+    pjsua_call_info target;
+    bool active = TransferCallInfo(transferConsultation, transferConsultationDialog, target);
+    if (active) {
+        // Disconnect the consultation bridge before resuming private audio
+        // with the original caller. OnEndCall normally performs the resume.
+        msip_call_hangup_fast(target.id);
+    }
+    if (transferSource != PJSUA_INVALID_ID) {
+        ResumeTransferSource();
+    }
+}
+
+void MessagesDlg::OnAttendedTransferResult(pjsua_call_id call_id, int status)
+{
+    if (call_id != transferSource || !transferCompleting) {
+        return;
+    }
+    if (status / 100 == 2) {
+        pjsua_call_info target;
+        bool active = TransferCallInfo(transferConsultation, transferConsultationDialog, target);
+        ClearAttendedTransfer();
+        if (active) {
+            msip_call_hangup_fast(target.id);
+        }
+    }
+    else if (status >= 300) {
+        // The PBX refused the transfer. Keep both calls so the user can retry
+        // or cancel the consultation and return to the original caller.
+        transferCompleting = false;
+        pjsua_call_info target;
+        if (!TransferCallInfo(transferConsultation, transferConsultationDialog, target)) {
+            ResumeTransferSource();
+        }
+    }
 }
 
 void MessagesDlg::OnBnClickedActions(bool isConference)

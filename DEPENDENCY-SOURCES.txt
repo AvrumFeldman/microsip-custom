@@ -1,0 +1,58 @@
+MicroSIP Custom - corresponding dependency sources
+=================================================
+
+Download the application-source and dependency-sources ZIP files from the
+same release at https://github.com/AvrumFeldman/microsip-custom/releases.
+Together they provide the source, library source, configuration, patches,
+build scripts and WAV assets for that release. The application's exact
+revision is in BUILD-REVISION.txt. SHA256SUMS files cover the archives.
+
+Requirements: Windows, PowerShell 7, Git, Visual Studio 2022 with C++ x86/x64
+tools, MFC/ATL and a Windows SDK. The compiler, Windows SDK and general build
+tools are obtained separately. Tool downloads still need Internet access.
+
+Rebuild using these archived dependency sources
+---------------------------------------------
+1. Extract the application source to a writable folder named microsip-custom.
+2. Create a sibling microsip-build directory.
+3. Extract pjproject-source.zip directly into microsip-build/pjproject.
+4. Extract vcpkg-source.zip directly into microsip-build/vcpkg.
+5. Copy the downloads directory into microsip-build/vcpkg/downloads.
+6. Run pwsh from microsip-custom: ./build-custom.ps1
+
+The build verifies pinned revisions using .microsip-source-revision when
+an archive has no .git directory. Do not remove those marker files.
+The original library downloads are verified against SHA512 values by the
+included vcpkg ports. All port patches, triplets and CMake helper scripts
+are in vcpkg-source.zip at the exact pinned revision. config/dependencies.json
+also records hashes and original URLs.
+
+PJSIP is pinned to 7de6e686fee1642f5443a3f39f0e5ad5e478a117 (2.15.1).
+The source archive omits only third_party/g7221, an unused codec with separate
+licensing requirements. build-custom.ps1 removes its unused ProjectReference
+from the aggregate project. config/pj-config-site.h is copied by the build
+to pjlib/include/pj/config_site.h, and config/dependency-paths.props supplies
+compiler include/library paths. No other PJSIP source modifications are made.
+
+vcpkg is pinned to 2750401336fb7c95f6619657a46a7e798661341c.
+Library sources: OpenSSL 3.6.5, Opus 1.6.1, SQLite 3.53.4, SQLiteCpp 3.3.3.
+Both the exact SQLite amalgamation used by vcpkg and the canonical SQLite
+source tree (sqlite-src-3530400.zip) are provided. PJSIP includes the sources
+of its linked codecs, resampler, SRTP library and WebRTC echo cancellation.
+
+The application-source archive's sounds directory contains the exact WAV
+assets shipped in the binary package. Copy them beside the built executable.
+Keep MicroSIPAudioGuard.exe beside microsip.exe for optional app muting.
+
+This provides a source rebuild, not a promise of bit-for-bit identical PE
+files across different Visual Studio/SDK versions. The original Windows
+build used Visual Studio 2022 MSVC 14.44.35207, static MFC/CRT, C++14 for the
+application, C++17 for the audio guard, Release/Win32, and Windows SDK 10.x.
+
+Licensing
+---------
+Preserve each component's copyright/license notices. The combined binary
+is distributed under GPLv3 (COPYING), using the GPL-2.0-or-later grant in
+MicroSIP/PJSIP source. The original GPLv2 LICENSE is also preserved.
+OpenSSL 3 uses Apache-2.0, which is compatible with GPLv3.
+See THIRD-PARTY-NOTICES.md and the binary package's licenses directory.

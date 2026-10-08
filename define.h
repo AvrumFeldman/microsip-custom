@@ -1,3 +1,4 @@
+// Modified 2026-10-08 for MicroSIP Custom: custom build branding.
 /*
  * Copyright (C) 2011-2026 MicroSIP (http://www.microsip.org)
  *
@@ -75,7 +76,11 @@
 
 #define _GLOBAL_NAME_NICE _GLOBAL_NAME
 
+#ifdef MICROSIP_AUDIO_ONLY
+#define _GLOBAL_NAME_VISIBLE "MicroSIP Custom"
+#else
 #define _GLOBAL_NAME_VISIBLE _GLOBAL_NAME_NICE
+#endif
 
 #define _GLOBAL_CALL_PICKUP "**"
 

@@ -1,3 +1,4 @@
+// Modified 2026-10-08 for MicroSIP Custom: use the custom application ID for the Jump List.
 /*
  * Copyright (C) 2011-2026 MicroSIP (http://www.microsip.org)
  *
@@ -29,8 +30,6 @@
 JumpList::JumpList(const std::wstring& AppID) :
 pcdl(nullptr)
 {
-    SetCurrentProcessExplicitAppUserModelID(AppID.c_str());
-
     HRESULT hr = CoCreateInstance(
         CLSID_DestinationList,
         nullptr,

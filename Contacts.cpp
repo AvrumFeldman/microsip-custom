@@ -1,3 +1,4 @@
+// Modified 2026-10-08 for MicroSIP Custom: remove the unused restricted message-box include.
 /*
  * Copyright (C) 2011-2026 MicroSIP (http://www.microsip.org)
  *
@@ -28,7 +29,6 @@
 #include "Markup.h"
 #include "Transfer.h"
 #include "afxinet.h"
-#include "MessageBoxX.h"
 #include "Domain/Contact.h"
 #include "Data/Database.h"
 #include "Data/ContactsRepository.h"

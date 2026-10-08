@@ -1,3 +1,4 @@
+// Modified 2026-10-08 for MicroSIP Custom: remove the unused proprietary regex include.
 /*
  * Copyright (C) 2011-2026 MicroSIP (http://www.microsip.org)
  *
@@ -22,7 +23,6 @@
 #include "AccountDlg.h"
 #include "mainDlg.h"
 #include "langpack.h"
-#include "atlrx.h"
 #include <ws2tcpip.h>
 #include "json.h"
 

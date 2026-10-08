@@ -1,0 +1,74 @@
+name: Build custom MicroSIP
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-2022
+    timeout-minutes: 90
+    env:
+      VCPKG_DEFAULT_BINARY_CACHE: ${{ github.workspace }}/build/vcpkg-cache
+    steps:
+      - uses: actions/checkout@v4
+      - name: Create dependency cache directory
+        shell: pwsh
+        run: New-Item -ItemType Directory -Force -Path $env:VCPKG_DEFAULT_BINARY_CACHE | Out-Null
+      - uses: actions/cache@v4
+        with:
+          path: build/vcpkg-cache
+          key: windows-2022-v143-static-${{ hashFiles('config/dependencies.json', 'build-custom.ps1') }}
+      - name: Build voice-only custom version
+        shell: pwsh
+        run: ./build-custom.ps1 -BuildRoot "$env:RUNNER_TEMP/microsip-build"
+      - name: Build and run XML and dial-plan regression tests
+        shell: pwsh
+        run: |
+          $vswhere = "${env:ProgramFiles(x86)}/Microsoft Visual Studio/Installer/vswhere.exe"
+          $vs = & $vswhere -latest -products '*' -requires Microsoft.VisualStudio.Component.VC.ATLMFC -property installationPath
+          foreach ($test in @('MarkupTests', 'DialPlanTests')) {
+            & "$vs/MSBuild/Current/Bin/MSBuild.exe" "tests/$test.vcxproj" /p:Configuration=Release /p:Platform=Win32 /v:minimal /nologo
+            if ($LASTEXITCODE) { throw "$test build failed." }
+            & "./out/$test.exe"
+            if ($LASTEXITCODE) { throw "$test failed." }
+          }
+      - name: Package clean portable build and complete source assets
+        shell: pwsh
+        run: ./package-custom.ps1 -BuildRoot "$env:RUNNER_TEMP/microsip-build"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: MicroSIP-Custom-release-assets
+          if-no-files-found: error
+          path: |
+            dist/MicroSIP-Custom-*.zip
+            dist/MicroSIP-Custom-*-SHA256SUMS.txt
+
+  release:
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: MicroSIP-Custom-release-assets
+          path: release-assets
+      - name: Publish binary and matching sources together
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            echo "Release already exists; preserving its reviewed assets."
+          else
+            gh release create "$RELEASE_TAG" release-assets/* --verify-tag --title "MicroSIP Custom $RELEASE_TAG" --generate-notes
+          fi

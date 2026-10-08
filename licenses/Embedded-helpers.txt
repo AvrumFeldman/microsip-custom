@@ -1,0 +1,30 @@
+Notices for permissive helpers bundled by upstream MicroSIP
+==========================================================
+
+StdioFileEx.cpp / StdioFileEx.h
+-----------------------------
+Copyright David Pritchard 2003-2007. davidpritchard@ctv.es
+
+You can use this class freely, but please keep my ego happy
+by leaving this comment in place.
+
+ggets.cpp / ggets.h
+------------------
+By C.B. Falconer. Public domain 2002-06-22.
+Attribution appreciated.
+Unicode/template adaptation by David Pritchard; see retained source comments.
+
+VisualStylesXP.cpp
+------------------
+Copyright (C) 2001-2002 by David Yuheng Zhao
+
+Distribute and change freely, except: don't remove my name from the source
+
+No warrantee of any kind, express or implied, is included with this
+software; use at your own risk, responsibility for damages (if any) to
+anyone resulting from the use of this software rests entirely with the
+user.
+
+Partly based on the _ThemeHelper struct in MFC7.0 source code (winctrl3.cpp),
+and the difference is that this implementation wraps the full set of
+visual style APIs from the platform SDK August 2001.

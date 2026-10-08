@@ -1,3 +1,4 @@
+// Modified 2026-10-08 for MicroSIP Custom: custom build version and voice-only feature selection.
 /*
 /*
  * Copyright (C) 2011-2026 MicroSIP (http://www.microsip.org)
@@ -18,10 +19,17 @@
  */
 
 #pragma once
+#ifdef MICROSIP_AUDIO_ONLY
+#define _GLOBAL_VERSION "3.22.16.2"
+#define _GLOBAL_VERSION_COMMA 3,22,16,2
+#else
 #define _GLOBAL_VERSION "3.22.16"
 #define _GLOBAL_VERSION_COMMA 3,22,16,0
+#endif
 #define _GLOBAL_TIMESTAMP 1789417397
 #define _GLOBAL_KEY "*********"
+#ifndef MICROSIP_AUDIO_ONLY
 #define _GLOBAL_VIDEO
+#endif
 #define _GLOBAL_NAME "MicroSIP"
 #define _GLOBAL_COMPANY "www.microsip.org"

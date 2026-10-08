@@ -1,0 +1,26 @@
+MicroSIP Custom - source availability
+====================================
+
+This independently maintained build is distributed under the GNU General
+Public License, version 3. See COPYING. It comes WITHOUT ANY WARRANTY.
+You may copy, modify and redistribute it under the applicable license terms.
+Upstream MicroSIP/PJSIP GPL-2.0-or-later notices and the GPLv2 LICENSE remain
+preserved; other components retain their own notices.
+
+Complete corresponding source is available without charge alongside every
+binary release at:
+https://github.com/AvrumFeldman/microsip-custom/releases
+
+Download BOTH assets matching the version in BUILD-REVISION.txt:
+  MicroSIP-Custom-<version>-source.zip
+  MicroSIP-Custom-<version>-dependency-sources.zip
+
+These include application/helper source, build scripts and configuration,
+library source archives, vcpkg patches/recipes, and the shipped WAV assets.
+See DEPENDENCY-SOURCES.txt in the source archive for rebuilding instructions.
+The repository is https://github.com/AvrumFeldman/microsip-custom.
+
+This is direct source access under GPLv3 section 6(d), not a substitute
+promise to supply source later. Keep both source assets publicly available
+for as long as their matching binaries are offered. Redistributors must
+also meet the license's source and notice requirements.

@@ -1,0 +1,46 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project DefaultTargets="Build" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup Label="ProjectConfigurations">
+    <ProjectConfiguration Include="Release|Win32"><Configuration>Release</Configuration><Platform>Win32</Platform></ProjectConfiguration>
+  </ItemGroup>
+  <PropertyGroup Label="Globals">
+    <ProjectGuid>{84CE558D-4E97-408C-BB96-92A1F4B7E02F}</ProjectGuid>
+    <WindowsTargetPlatformVersion>10.0</WindowsTargetPlatformVersion>
+    <PjProjectDir Condition="'$(PjProjectDir)'==''">$(MSBuildThisFileDirectory)..\microsip-build\pjproject</PjProjectDir>
+    <DependencyDir Condition="'$(DependencyDir)'==''">$(MSBuildThisFileDirectory)..\microsip-build\vcpkg\installed\x86-windows-static</DependencyDir>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
+  <PropertyGroup Label="Configuration">
+    <ConfigurationType>Application</ConfigurationType><PlatformToolset>v143</PlatformToolset>
+    <UseOfMfc>Static</UseOfMfc><CharacterSet>Unicode</CharacterSet>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
+  <PropertyGroup>
+    <OutDir>$(MSBuildThisFileDirectory)out\</OutDir><IntDir>$(MSBuildThisFileDirectory)build\obj\</IntDir>
+    <TargetName>microsip</TargetName><LinkIncremental>false</LinkIncremental>
+  </PropertyGroup>
+  <ItemDefinitionGroup>
+    <ClCompile>
+      <LanguageStandard>stdcpp14</LanguageStandard><RuntimeLibrary>MultiThreaded</RuntimeLibrary>
+      <Optimization>MaxSpeed</Optimization><ExceptionHandling>Sync</ExceptionHandling>
+      <WarningLevel>Level3</WarningLevel><MultiProcessorCompilation>true</MultiProcessorCompilation>
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <PreprocessorDefinitions>WIN32;_WINDOWS;NDEBUG;MICROSIP_AUDIO_ONLY;PJ_WIN32=1;PJ_M_I386=1;_CRT_SECURE_NO_WARNINGS;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <AdditionalIncludeDirectories>.;lib;lib\jsoncpp\json;$(PjProjectDir)\pjlib\include;$(PjProjectDir)\pjlib-util\include;$(PjProjectDir)\pjmedia\include;$(PjProjectDir)\pjnath\include;$(PjProjectDir)\pjsip\include;$(DependencyDir)\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+    </ClCompile>
+    <ResourceCompile><PreprocessorDefinitions>NDEBUG;MICROSIP_AUDIO_ONLY;%(PreprocessorDefinitions)</PreprocessorDefinitions><AdditionalIncludeDirectories>.;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories></ResourceCompile>
+    <Link>
+      <SubSystem>Windows</SubSystem><GenerateDebugInformation>true</GenerateDebugInformation>
+      <AdditionalOptions>/PDBALTPATH:microsip.pdb %(AdditionalOptions)</AdditionalOptions>
+      <IgnoreSpecificDefaultLibraries>libopus.a;%(IgnoreSpecificDefaultLibraries)</IgnoreSpecificDefaultLibraries>
+      <AdditionalLibraryDirectories>$(PjProjectDir)\lib;$(DependencyDir)\lib;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
+      <AdditionalDependencies>opus.lib;libssl.lib;libcrypto.lib;SQLiteCpp.lib;sqlite3.lib;Wtsapi32.lib;winmm.lib;ws2_32.lib;ole32.lib;uuid.lib;crypt32.lib;bcrypt.lib;secur32.lib;iphlpapi.lib;strmiids.lib;dmoguids.lib;wmcodecdspuuid.lib;msdmo.lib;%(AdditionalDependencies)</AdditionalDependencies>
+    </Link>
+    <Manifest><AdditionalManifestFiles>custom.manifest;%(AdditionalManifestFiles)</AdditionalManifestFiles><EnableDpiAwareness>PerMonitorHighDPIAware</EnableDpiAwareness></Manifest>
+  </ItemDefinitionGroup>
+  <ItemGroup>
+    <ClCompile Include="*.cpp;lib\*.cpp;lib\jsoncpp\*.cpp;Data\*.cpp;Service\*.cpp" Exclude="lib\ggets.cpp" />
+    <ResourceCompile Include="main.rc" />
+  </ItemGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
+</Project>

@@ -1,3 +1,4 @@
+// Modified 2026-10-08 for MicroSIP Custom: microphone ownership, idle release, dial plans and WAV recording.
 /*
  * Copyright (C) 2011-2026 MicroSIP (http://www.microsip.org)
  *
@@ -24,7 +25,7 @@
 #include "settings.h"
 #include "langpack.h"
 #include <Psapi.h>
-#include "atlrx.h"
+#include "DialPlan.h"
 #include "addons.h"
 
 #ifdef UNICODE
@@ -102,83 +103,9 @@ CString FormatNumber(CString& number, CString* commands, bool noTransform) {
                     numberFormated = accountSettings.account.dialingPrefix + numberFormated;
                 }
                 if (!accountSettings.account.dialPlan.IsEmpty()) {
-                    CString dialPlan = accountSettings.account.dialPlan;
-                    dialPlan.Trim(_T(" ()"));
-                    pos = 0;
-                    bool matched = false;
-                    CString resToken = dialPlan.Tokenize(_T("|"), pos);
-                    while (!resToken.IsEmpty()) {
-                        CString newToken;
-                        CString replaceGroup;
-                        CStringList delayedReplaces;
-                        bool group = false;
-                        for (int i = 0; i < resToken.GetLength(); i++) {
-                            TCHAR c = resToken.GetAt(i);
-                            if (!group && c == '<') {
-                                group = true;
-                            }
-                            else if (group) {
-                                if (c != '>') {
-                                    replaceGroup.AppendChar(c);
-                                }
-                                else {
-                                    if (!replaceGroup.IsEmpty()) {
-                                        int p = replaceGroup.Find(':');
-                                        if (p == -1) {
-                                            newToken.Append(replaceGroup);
-                                        }
-                                        else {
-                                            CString match = replaceGroup.Left(p);
-                                            CString replace = replaceGroup.Mid(p + 1, replaceGroup.GetLength() - p - 1);
-                                            newToken.AppendFormat(_T("{%s}"), match);
-                                            delayedReplaces.AddTail(replace);
-                                        }
-                                    }
-                                    replaceGroup.Empty();
-                                    group = false;
-                                }
-                            }
-                            else {
-                                newToken.AppendChar(c);
-                            }
-                        }
-                        newToken.Replace('.', '*');
-                        newToken.Replace('x', '.');
-                        newToken.Replace('X', '.');
-                        resToken.Format(_T("^%s$"), newToken);
-                        CAtlRegExp<> regex;
-                        REParseError parseStatus = regex.Parse(resToken, true);
-                        if (parseStatus == REPARSE_ERROR_OK) {
-                            CAtlREMatchContext<> mc;
-                            if (regex.Match(numberFormated, &mc)) {
-                                POSITION pos = delayedReplaces.GetHeadPosition();
-                                if (pos) {
-                                    CString numberFormatedNew;
-                                    int i = 0;
-                                    const CAtlREMatchContext<>::RECHAR* szPrev = mc.m_Match.szStart;
-                                    while (pos) {
-                                        CString replace = delayedReplaces.GetNext(pos);
-                                        const CAtlREMatchContext<>::RECHAR* szStart, * szEnd;
-                                        mc.GetMatch(i, &szStart, &szEnd);
-                                        int m = szPrev - mc.m_Match.szStart;
-                                        int n = szStart - szPrev;
-                                        numberFormatedNew.Append(numberFormated.Mid(m, n));
-                                        numberFormatedNew.Append(replace);
-                                        szPrev = szEnd;
-                                        i++;
-                                    }
-                                    numberFormatedNew.Append(numberFormated.Right(mc.m_Match.szEnd - szPrev - 1));
-                                    numberFormated = numberFormatedNew;
-                                }
-                                matched = true;
-                                break;
-                            }
-                        }
-                        resToken = dialPlan.Tokenize(_T("|"), pos);
-                    }
-                    if (!matched) {
-                        numberFormated.Empty();
-                    }
+                    numberFormated = CustomDialPlan::Apply(
+                        accountSettings.account.dialPlan.GetString(),
+                        numberFormated.GetString()).c_str();
                 }
             }
         }
@@ -541,16 +468,74 @@ void msip_msg_data_init(pj_pool_t*& pool, const pjsua_acc_id& acc_id, pjsua_msg_
     }
 }
 
+bool msip_call_audio_allowed(const pjsua_call_info& ci)
+{
+    // Do not count a dialog whose local hangup is still awaiting a SIP reply.
+    if (ci.state == PJSIP_INV_STATE_NULL || ci.state == PJSIP_INV_STATE_DISCONNECTED ||
+        !pjsua_call_is_active(ci.id)) return false;
+    if (ci.role == PJSIP_ROLE_UAC || ci.state == PJSIP_INV_STATE_CONNECTING ||
+        ci.state == PJSIP_INV_STATE_CONFIRMED) return true;
+    call_user_data* user_data = (call_user_data*)pjsua_call_get_user_data(ci.id);
+    return user_data && InterlockedCompareExchange(&user_data->audioAccepted, FALSE, FALSE);
+}
+
+bool msip_call_in_progress()
+{
+    if (!is_pjsua_running()) return false;
+    pjsua_call_id ids[PJSUA_MAX_CALLS];
+    unsigned count = PJ_ARRAY_SIZE(ids);
+    if (pjsua_enum_calls(ids, &count) != PJ_SUCCESS) return false;
+    for (unsigned i = 0; i < count; ++i) {
+        // A hung-up INVITE may remain enumerated while BYE/CANCEL is retried.
+        // pjsua_call_is_active also checks the internal hanging_up flag.
+        if (!pjsua_call_is_active(ids[i])) continue;
+        pjsua_call_info ci;
+        if (pjsua_call_get_info(ids[i], &ci) != PJ_SUCCESS) continue;
+        if (msip_call_audio_allowed(ci)) return true;
+    }
+    return false;
+}
+
+void msip_release_idle_microphone()
+{
+    if (!is_pjsua_running() || msip_call_in_progress()) return;
+    pjsua_snd_dev_param params;
+    pjsua_snd_dev_param_default(&params);
+    if (pjsua_get_snd_dev2(&params) != PJ_SUCCESS ||
+        (params.mode & PJSUA_SND_DEV_SPEAKER_ONLY)) return;
+
+    // PJSIP's idle-close timer waits for all dialogs AND bridge connections.
+    // A ringtone, retained BYE transaction or stale port must never retain
+    // capture. Keep playback available, without opening an idle device.
+    params.mode = PJSUA_SND_DEV_SPEAKER_ONLY | PJSUA_SND_DEV_NO_IMMEDIATE_OPEN;
+    if (pjsua_set_snd_dev2(&params) != PJ_SUCCESS) {
+        // Device removal can prevent reopening playback. Still release capture
+        // and remember safe playback-only defaults for the next sound.
+        pjsua_set_no_snd_dev();
+        pjsua_set_snd_dev2(&params);
+    }
+}
+
 void msip_set_sound_device(int outDev, bool forse, bool outOnly) {
     if (!is_pjsua_running()) {
         return;
     }
-    int in, out;
-    if (forse || (msip_audio_input == -1 && !outOnly) || pjsua_get_snd_dev(&in, &out) != PJ_SUCCESS || msip_audio_input != in || outDev != out) {
+    // Local sounds must not acquire the microphone. Do not downgrade an
+    // existing call when a second dial pad or a notification plays a tone.
+    if (outOnly && msip_call_in_progress()) {
+        outOnly = false;
+    }
+    pjsua_snd_dev_param current;
+    pjsua_snd_dev_param_default(&current);
+    const unsigned mode = outOnly ? PJSUA_SND_DEV_SPEAKER_ONLY : 0;
+    if (forse || pjsua_get_snd_dev2(&current) != PJ_SUCCESS ||
+        current.capture_dev != msip_audio_input || current.playback_dev != outDev ||
+        (current.mode & PJSUA_SND_DEV_SPEAKER_ONLY) != mode) {
         pjsua_snd_dev_param params;
         pjsua_snd_dev_param_default(&params);
         params.capture_dev = msip_audio_input;
         params.playback_dev = outDev;
+        params.mode = mode;
         if (pjsua_set_snd_dev2(&params) != PJ_SUCCESS) {
             params.mode |= PJSUA_SND_DEV_SPEAKER_ONLY;
             pjsua_set_snd_dev2(&params);
@@ -1330,6 +1315,7 @@ void msip_call_hangup_fast(pjsua_call_id call_id, pjsua_call_info* p_call_info)
     call_user_data* user_data = (call_user_data*)pjsua_call_get_user_data(call_id);
     if (pjsua_call_hangup(call_id, 0, NULL, NULL) == PJ_SUCCESS) {
         mainDlg->messagesDlg->OnEndCall(p_call_info, user_data);
+        msip_release_idle_microphone();
     }
 }
 

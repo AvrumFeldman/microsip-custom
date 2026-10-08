@@ -1,3 +1,4 @@
+// Modified 2026-10-08 for MicroSIP Custom: persistent call audio preferences.
 /*
  * Copyright (C) 2011-2026 MicroSIP (http://www.microsip.org)
  *
@@ -90,6 +91,8 @@ struct AccountSettings {
 	bool enableMediaButtons;
 	bool headsetSupport;
 	bool localDTMF;
+	int callAudioMode = 0; // 0 unchanged, 1 all other apps, 2 selected apps
+	CString callAudioApps;
 	bool enableLocalAccount;
 	bool crashReport;
 	bool enableLog;

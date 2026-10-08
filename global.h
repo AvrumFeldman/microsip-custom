@@ -1,3 +1,4 @@
+// Modified 2026-10-08 for MicroSIP Custom: microphone ownership and lifecycle declarations.
 /*
  * Copyright (C) 2011-2026 MicroSIP (http://www.microsip.org)
  *
@@ -82,6 +83,7 @@ enum EUserWndMessages
     IDT_TIMER_DTMF,
     IDT_TIMER_CUSTOM,
     IDT_TIMER_VERSION,
+    IDT_TIMER_AUDIO_FOCUS,
     UM_CLOSETAB,
     UM_DBLCLICKTAB,
     UM_QUERYTAB,
@@ -293,6 +295,8 @@ struct call_user_data
     CString reason;
     bool inConference;
     bool autoAnswer;
+    // Explicit acceptance can precede PJSIP's CONNECTING state/media callback.
+    volatile LONG audioAccepted;
     bool forwarding;
     bool hidden;
     int holdFrom;
@@ -302,6 +306,7 @@ struct call_user_data
         , hangup(false)
         , inConference(false)
         , autoAnswer(false)
+        , audioAccepted(FALSE)
         , forwarding(false)
         , hidden(false)
         , holdFrom(-1)
@@ -405,6 +410,9 @@ CString URLMask(CString url, SIPURI* sipuri = NULL, pjsua_acc_id acc = -1, call_
 HICON LoadImageIcon(int i, int w = 0, int h = 0);
 
 void msip_msg_data_init(pj_pool_t*& pool, const pjsua_acc_id& acc_id, pjsua_msg_data& msg_data);
+bool msip_call_in_progress();
+bool msip_call_audio_allowed(const pjsua_call_info& call_info);
+void msip_release_idle_microphone();
 void msip_set_sound_device(int outDev, bool forse = false, bool outOnly = false);
 bool msip_call_statistics(call_user_data* user_data, float* MOS);
 void msip_call_dial_dtmf(pjsua_call_id call_id, CString digits, bool silent = false);

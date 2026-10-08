@@ -1,3 +1,4 @@
+// Modified 2026-10-08 for MicroSIP Custom: custom call audio settings controls.
 /*
  * Copyright (C) 2011-2026 MicroSIP (http://www.microsip.org)
  *
@@ -49,6 +50,8 @@ public:
     afx_msg void OnClose();
     afx_msg void OnBnClickedCancel();
     afx_msg void OnBnClickedOk();
+    afx_msg void OnCallAudioModeChanged();
+    afx_msg void OnBrowseCallAudioApp();
     afx_msg LRESULT OnUpdateSettings(WPARAM wParam, LPARAM lParam);
     afx_msg void OnDeltaposSpinModify(NMHDR* pNMHDR, LRESULT* pResult);
     afx_msg int OnVKeyToItem(UINT, CListBox*, UINT);

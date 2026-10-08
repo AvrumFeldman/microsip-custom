@@ -1,0 +1,87 @@
+MicroSIP Custom 3.22.16.2 - Windows voice calls
+============================================
+
+This is an independently maintained fork, not an official MicroSIP release.
+Download/update: https://github.com/AvrumFeldman/microsip-custom/releases
+Source and public PRs: https://github.com/AvrumFeldman/microsip-custom
+
+Start
+-----
+Extract to a separate writable folder and run microsip.exe. Keep
+MicroSIPAudioGuard.exe beside it. Close any other MicroSIP instance first.
+Add your SIP account and re-enter its password. Official saved passwords
+cannot be imported because the public source omits the official encryption
+key. Your original installation is not replaced. Contacts can be exported
+from your original copy and imported here.
+
+Audio changes
+-------------
+Entering digits and incoming ringtones use playback only. Incoming early
+media cannot activate capture before you answer. Incoming ringing alone
+does not grab capture or mute music. Capture is released after the final call ends, even
+before a remote SIP hangup acknowledgment. Periodic state reconciliation
+cleans up stale microphone ownership.
+
+Menu > Settings > Other audio during calls offers:
+  Leave other audio unchanged (default)
+  Mute all other apps
+  Mute selected apps
+For selected apps use names such as Spotify.exe; vlc.exe, or Add app...
+Matching is case-insensitive. A browser name affects the whole browser.
+
+Muting begins when dialing an outgoing call or answering an incoming call,
+continues through hold/overlapping calls, and ends after the final call.
+Apps already muted stay muted; volume levels are unchanged. A manual unmute
+during the call takes precedence for that session until the next call.
+New audio sessions are detected every 200 ms. MicroSIP and system sounds
+are excluded. The audio guard restores music if MicroSIP crashes/exits;
+it cannot restore if the guard itself is killed or Windows audio fails.
+Exclusive-mode players may not follow Windows session mute controls.
+
+Calls
+-----
+CONF > Add participant / Remove participant works in single-call mode.
+Choose the participant to remove; only that conference leg is disconnected.
+
+Transfer's dropdown offers Blind Transfer and Attended Transfer (consult
+first). For attended transfer enter the destination and confirm, speak to
+the destination, then select Complete attended transfer. Cancel consultation
+and return resumes the original held call. PBX/provider support for SIP
+REFER with Replaces is required. Existing PBX feature-code settings remain
+available.
+
+Build differences and validation
+--------------------------------
+The dialer hides messaging and video quick buttons for this calls-only
+build, while retaining their source code. It uses a full-width Call button
+and keeps the number field near the tabs instead of adding blank top space.
+Windows taskbar identity and icon fallbacks are explicitly set.
+Name/number separators in the separate call window display correctly.
+
+Based on published MicroSIP 3.22.16 source, not the newer official 3.22.18
+binary. Voice only; WAV recording; PJSIP audio codecs plus Opus. No video,
+official MP3 recorder, or external G.729/AMR/SILK/G.722.1 codecs. TLS and
+SRTP/DTLS are included. The executables are unsigned.
+PJSIP includes public MP3 writer source, but its stock recorder does not
+wire that writer to an encoder. MP3 needs integration and recording tests;
+WAV-only is this custom build's limitation, not a licensing requirement.
+
+XML/regex helpers with restrictive bundled-source notices were replaced;
+an unused message-box helper was removed. Original upstream authorship
+and applicable license notices are preserved.
+
+Regression tests use synthetic local SIP calls, silent Windows render
+sessions and account-free test data. Real headset Bluetooth switching and
+provider/PBX transfer compatibility still require a check on your setup.
+See README.md for build commands, test prerequisites and detailed behavior.
+
+License and sources
+-------------------
+The combined release uses GNU GPLv3 (COPYING), using MicroSIP/PJSIP's
+GPL-2.0-or-later grant. The original GPLv2 LICENSE is preserved. OpenSSL 3
+uses Apache-2.0, which is compatible with GPLv3. See THIRD-PARTY-NOTICES.md,
+SOURCE-OFFER.txt and licenses/. There is NO WARRANTY.
+
+Download BOTH matching application-source and dependency-sources ZIPs from
+the release page for complete corresponding source and rebuild instructions.
+BUILD-REVISION.txt identifies the source commit. SHA256SUMS.txt lists hashes.
