@@ -179,27 +179,22 @@ BOOL RinginDlg::OnInitDialog() {
         }
     }
     SetWindowPos(accountSettings.bringToFrontOnIncoming || accountSettings.alwaysOnTop ? &this->wndTopMost : &this->wndNoTopMost, x, y, 0, 0, SWP_NOSIZE | SWP_NOACTIVATE);
+    // Raise the notification without activating it. Activation interrupts the
+    // current app and can make Windows snap the pointer to a dialog button.
     if (accountSettings.bringToFrontOnIncoming) {
-
-            if (mainDlg->IsWindowVisible()) {
-                if (mainDlg->IsIconic()) {
-                    mainDlg->ShowWindow(SW_RESTORE);
-                }
-                else {
-                    mainDlg->ShowWindow(SW_HIDE);
-                    mainDlg->ShowWindow(SW_MINIMIZE);
-                    mainDlg->ShowWindow(SW_RESTORE);
-                }
-            }
-            ShowWindow(SW_SHOWNORMAL);
-            SetForegroundWindow();
-    }
-    else {
         if (mainDlg->IsWindowVisible()) {
-            ShowWindow(SW_SHOWNORMAL);
+            if (mainDlg->IsIconic()) {
+                mainDlg->ShowWindow(SW_SHOWNOACTIVATE);
+            }
+            mainDlg->SetWindowPos(&wndTop, 0, 0, 0, 0,
+                SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
         }
+        ShowWindow(SW_SHOWNOACTIVATE);
     }
-    return 0;
+    else if (mainDlg->IsWindowVisible()) {
+        ShowWindow(SW_SHOWNOACTIVATE);
+    }
+    return FALSE;
 }
 
 pjsua_call_id RinginDlg::GetCallId()

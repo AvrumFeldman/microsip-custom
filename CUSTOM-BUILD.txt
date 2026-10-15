@@ -1,4 +1,4 @@
-MicroSIP Custom 3.22.16.4 - Windows voice calls
+MicroSIP Custom 3.22.16.5 - Windows voice calls
 ============================================
 
 This is an independently maintained fork, not an official MicroSIP release.
@@ -22,6 +22,10 @@ media cannot activate capture before you answer. Incoming ringing alone
 does not grab capture or mute music. Capture is released after the final call ends, even
 before a remote SIP hangup acknowledgment. Periodic state reconciliation
 cleans up stale microphone ownership.
+
+Incoming-call windows are shown without activation. With bring-to-front
+enabled they appear in front while focus stays in your current app, avoiding
+Windows' pointer snap to a newly activated dialog button.
 
 Menu > Settings > Other audio during calls offers:
   Leave other audio unchanged (default)

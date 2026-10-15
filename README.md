@@ -12,6 +12,7 @@ Pull requests are welcome and appreciated, including AI-assisted and AI-generate
 | --- | --- |
 | Entering digits | Local keypad tones use playback only; entering a number does not open the microphone. |
 | All incoming calls | Ringing uses playback only; pre-answer media cannot activate capture. Ringing alone does not mute other apps. |
+| Incoming-call focus | With bring-to-front enabled, the ringing window appears in front without taking focus from the app you are using or triggering Windows' pointer snap to a dialog button. |
 | Microphone cleanup | Capture follows active call ownership and is released when the final call ends, including local hangup before the SIP peer acknowledges. A periodic state check recovers stale audio state. |
 | Music during calls | Optional settings: leave other audio unchanged, mute all other apps, or mute selected executable names. Only mutes applied by MicroSIP are restored; pre-muted apps and manual changes are preserved. |
 | Bluetooth after hangup | Keep other audio muted until capture closes and Windows reports that the relevant Bluetooth call audio connection has ended. No fixed unmute delay or headset model list. |
