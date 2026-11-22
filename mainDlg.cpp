@@ -48,6 +48,9 @@
 #include <Wtsapi32.h>
 #include <memory>
 #include "DialPlan.h"
+#include "CustomUpdate.h"
+#include <mutex>
+#include <thread>
 
 #include "afxvisualmanager.h"
 #include "afxvisualmanagerwindows.h"
@@ -90,7 +93,58 @@ static pj_status_t on_snd_dev_operation(int operation)
 static UINT WM_SHELLHOOKMESSAGE;
 static UINT WM_TASKBARRESTARTMESSAGE;
 
-static bool updateCheckerShow = false;
+struct CustomUpdateUiState {
+    std::mutex mutex;
+    bool closed = false;
+    bool running = false;
+    bool manual = false;
+    ULONGLONG retryAfter = 0;
+    std::unique_ptr<CustomUpdate::CheckResult> checked;
+    std::unique_ptr<CustomUpdate::StageResult> staged;
+    std::unique_ptr<CustomUpdate::Release> available;
+    std::unique_ptr<CustomUpdate::StageResult> prepared;
+};
+
+static bool StartCustomUpdateWork(const std::shared_ptr<CustomUpdateUiState>& state,
+    HWND window, bool download, const CustomUpdate::Release& release = {})
+{
+    {
+        std::lock_guard<std::mutex> lock(state->mutex);
+        if (state->closed || state->running) return false;
+        state->running = true;
+    }
+    try {
+        std::thread([state, window, download, release]() {
+            auto check = std::make_unique<CustomUpdate::CheckResult>();
+            auto stage = std::make_unique<CustomUpdate::StageResult>();
+            try {
+                if (download) *stage = CustomUpdate::Stage(release);
+                else *check = CustomUpdate::CheckLatest(_T(_GLOBAL_VERSION));
+            }
+            catch (...) {
+                if (download) stage->error = L"The update could not be downloaded or verified.";
+                else check->error = L"The GitHub release check could not be completed.";
+            }
+            // Results belong to the mailbox, not to a posted pointer. Closing
+            // the UI invalidates delivery, including a subsequently reused HWND.
+            std::lock_guard<std::mutex> lock(state->mutex);
+            if (state->closed) { state->running = false; return; }
+            if (download) state->staged = std::move(stage);
+            else state->checked = std::move(check);
+            if (!::PostMessage(window, UM_UPDATE_CHECKER_LOADED, 0, 0)) {
+                state->running = false;
+                state->staged.reset();
+                state->checked.reset();
+            }
+        }).detach();
+        return true;
+    }
+    catch (...) {
+        std::lock_guard<std::mutex> lock(state->mutex);
+        state->running = false;
+        return false;
+    }
+}
 
 static UINT BASED_CODE indicators[] =
 {
@@ -186,7 +240,17 @@ LRESULT CmainDlg::onRegState2(WPARAM wParam, LPARAM lParam)
     else {
     }
 
-    UpdateWindowText(headerError, IDI_DEFAULT, true);
+    // Persistent retries must not reopen the account editor or show another
+    // password balloon every time the same credentials are rejected.
+    const bool authError = code == 401 || code == 403;
+    const bool notify = !authError || !m_registrationAuthErrorShown;
+    if (authError) {
+        m_registrationAuthErrorShown = true;
+    }
+    else if (code >= 200 && code < 300) {
+        m_registrationAuthErrorShown = false;
+    }
+    UpdateWindowText(headerError, IDI_DEFAULT, notify);
 
     return 0;
 }
@@ -298,13 +362,28 @@ LRESULT CmainDlg::onCallState(WPARAM wParam, LPARAM lParam)
     pjsua_call_info* call_info = (pjsua_call_info*)wParam;
     call_user_data* user_data = (call_user_data*)lParam;
 
-    // Rejected incoming calls stay invisible. The UI owns queued state data:
-    // never free it in a worker while earlier notifications are still pending.
+    // Policy-rejected calls skip the ringing/conversation UI, but still belong
+    // in history. The UI owns queued data until the final state notification.
     user_data->CS.Lock();
     bool hidden = user_data->hidden;
+    CString rejectionReason = user_data->reason;
     user_data->CS.Unlock();
     if (hidden) {
-        if (call_info->state == PJSIP_INV_STATE_DISCONNECTED) delete user_data;
+        if (call_info->state == PJSIP_INV_STATE_DISCONNECTED) {
+            // The 487 path suppresses a duplicate leg after answering the same
+            // SIP dialog; only actual policy/busy rejections should be logged.
+            if (call_info->role == PJSIP_ROLE_UAS && call_info->last_status == 486) {
+                SIPURI rejectedURI;
+                ParseCallSIPURI(call_info, user_data, rejectedURI);
+                CString rejectedAddress = MSIP::BuildSIPURI(rejectedURI);
+                pageCalls->Add(call_info->call_id, rejectedAddress,
+                    GetNameForCall(rejectedURI, user_data), CString(), MSIP_CALL_TYPE_MISSED, user_data);
+                pageCalls->SetDuration(call_info->call_id, 0, msip_get_duration(&call_info->total_duration));
+                pageCalls->SetInfo(call_info->call_id, Translate(rejectionReason.IsEmpty()
+                    ? MSIP::PjToStr(&call_info->last_status_text) : rejectionReason));
+            }
+            delete user_data;
+        }
         delete call_info;
         return 0;
     }
@@ -607,22 +686,23 @@ LRESULT CmainDlg::onCallState(WPARAM wParam, LPARAM lParam)
         }
     }
 
-    if (messagesContact) {
-        CString name = messagesContact->name;
-        CString address = messagesContact->aor + messagesContact->aorSuffix;
-        if (call_info->state == PJSIP_INV_STATE_DISCONNECTED) {
-            messagesContact->mediaStatus = PJSUA_CALL_MEDIA_ERROR;
-            if (call_info->role == PJSIP_ROLE_UAS && call_info->last_status == 486) {
-                pageCalls->Add(call_info->call_id, address, name, messagesContact->commands, MSIP_CALL_TYPE_MISSED, user_data);
-            }
+    {
+        // Persistence must not depend on a conversation tab still existing.
+        // Upsert terminal states as well so fast failures and answered calls
+        // retain a record before OnEndCall writes their duration and result.
+        CString name = messagesContact ? messagesContact->name : GetNameForCall(sipuri, user_data);
+        CString address = messagesContact ? messagesContact->aor + messagesContact->aorSuffix
+            : MSIP::BuildSIPURI(sipuri);
+        CString commands = messagesContact ? messagesContact->commands : CString();
+        int type = call_info->role == PJSIP_ROLE_UAS ? MSIP_CALL_TYPE_INCOMING : MSIP_CALL_TYPE_OUTGOING;
+        if (call_info->state == PJSIP_INV_STATE_DISCONNECTED &&
+            call_info->role == PJSIP_ROLE_UAS &&
+            call_info->connect_duration.sec == 0 && call_info->connect_duration.msec == 0) {
+            type = MSIP_CALL_TYPE_MISSED;
         }
-        else {
-            if (call_info->role == PJSIP_ROLE_UAS) {
-                pageCalls->Add(call_info->call_id, address, name, messagesContact->commands, MSIP_CALL_TYPE_INCOMING, user_data);
-            }
-            else {
-                pageCalls->Add(call_info->call_id, address, name, messagesContact->commands, MSIP_CALL_TYPE_OUTGOING, user_data);
-            }
+        pageCalls->Add(call_info->call_id, address, name, commands, type, user_data);
+        if (messagesContact && call_info->state == PJSIP_INV_STATE_DISCONNECTED) {
+            messagesContact->mediaStatus = PJSUA_CALL_MEDIA_ERROR;
         }
     }
     if (accountSettings.singleMode) {
@@ -933,6 +1013,10 @@ LRESULT CmainDlg::onIncomingCall(WPARAM wParam, LPARAM lParam)
     pjsua_call_info* call_info = &current;
     call_user_data* user_data = (call_user_data*)pjsua_call_get_user_data(current.id);
     if (!user_data) return 0;
+    if (installingCustomUpdate) {
+        pjsua_call_answer(current.id, 480, NULL, NULL);
+        return 0;
+    }
     {
         CSingleLock lock(&user_data->CS, TRUE);
         SIPURI diversion;
@@ -966,6 +1050,7 @@ LRESULT CmainDlg::onIncomingCall(WPARAM wParam, LPARAM lParam)
     if ((!accountSettings.callWaiting && calls_count_cmp > 1) || (accountSettings.maxConcurrentCalls > 0 && calls_count_cmp > accountSettings.maxConcurrentCalls)) {
         user_data->CS.Lock();
         user_data->hidden = true;
+        user_data->reason = _T("Maximum concurrent calls reached");
         user_data->CS.Unlock();
         msip_call_busy(call_info->id, _T("Maximum concurrent calls reached"));
     }
@@ -1027,6 +1112,7 @@ LRESULT CmainDlg::onIncomingCall(WPARAM wParam, LPARAM lParam)
             }
             user_data->CS.Lock();
             user_data->hidden = true;
+            user_data->reason = reason;
             user_data->CS.Unlock();
             msip_call_busy(call_info->id, reason);
         }
@@ -1750,6 +1836,13 @@ CmainDlg::~CmainDlg(void)
 
 void CmainDlg::OnDestroy()
 {
+    KillTimer(IDT_TIMER_CUSTOM_UPDATE);
+    if (customUpdates) {
+        std::lock_guard<std::mutex> lock(customUpdates->mutex);
+        customUpdates->closed = true;
+        customUpdates->checked.reset();
+        customUpdates->staged.reset();
+    }
     KillTimer(IDT_TIMER_AUDIO_FOCUS);
     audioFocus.Stop();
     statistics.destroyTime = CTime::GetCurrentTime().GetTime();
@@ -1836,7 +1929,8 @@ BEGIN_MESSAGE_MAP(CmainDlg, CBaseDialog)
     ON_NOTIFY(TCN_SELCHANGE, IDC_MAIN_TAB, &CmainDlg::OnTcnSelchangeTab)
     ON_NOTIFY(TCN_SELCHANGING, IDC_MAIN_TAB, &CmainDlg::OnTcnSelchangingTab)
     ON_COMMAND(ID_MENU_WEBSITE, OnMenuWebsite)
-    ON_COMMAND(ID_MENU_HELP, OnMenuHelp)
+    ON_COMMAND(ID_MENU_ABOUT, OnMenuAbout)
+    ON_COMMAND(ID_HELP, OnMenuAbout)
     ON_COMMAND(ID_MENU_ADDL, OnMenuAddl)
     ON_COMMAND(ID_MUTE_INPUT, OnMuteInput)
     ON_COMMAND(ID_MUTE_OUTPUT, OnMuteOutput)
@@ -1895,6 +1989,7 @@ CmainDlg::CmainDlg(CWnd * pParent /*=NULL*/)
     statistics.createTime = CTime::GetCurrentTime().GetTime();
 
     mainDlg = this;
+    customUpdates = std::make_shared<CustomUpdateUiState>();
 
     this->m_hWnd = NULL;
 
@@ -2000,6 +2095,9 @@ int CmainDlg::OnCreate(LPCREATESTRUCT lpCreateStruct)
 BOOL CmainDlg::OnInitDialog()
 {
     CBaseDialog::OnInitDialog();
+    if (!accountSettings.profileIdentity.IsEmpty()) {
+        ::SetProp(m_hWnd, accountSettings.profileIdentity, (HANDLE)1);
+    }
     SetTimer(IDT_TIMER_AUDIO_FOCUS, 250, NULL);
 
     messagesDlg = new MessagesDlg(this);
@@ -2261,6 +2359,9 @@ LRESULT CmainDlg::OnCreated(WPARAM wParam, LPARAM lParam)
     }
     PJAccountAdd();
     //--
+    msip_startup_check(this);
+    SetTimer(IDT_TIMER_CUSTOM_UPDATE, 60000, NULL);
+    PostMessage(WM_TIMER, IDT_TIMER_CUSTOM_UPDATE, 0);
     WM_SHELLHOOKMESSAGE = RegisterWindowMessage(_T("SHELLHOOK"));
     if (WM_SHELLHOOKMESSAGE) {
         RegisterShellHookWindow(m_hWnd);
@@ -2500,6 +2601,22 @@ void CmainDlg::OnMenuExit()
     OnClose();
 }
 
+static bool IsCurrentInputDesktop()
+{
+    HDESK input = OpenInputDesktop(0, FALSE, DESKTOP_READOBJECTS);
+    if (!input) {
+        return false;
+    }
+    WCHAR currentName[256] = {}, inputName[256] = {};
+    DWORD needed = 0;
+    bool same = GetUserObjectInformationW(GetThreadDesktop(GetCurrentThreadId()), UOI_NAME,
+        currentName, sizeof(currentName), &needed) &&
+        GetUserObjectInformationW(input, UOI_NAME, inputName, sizeof(inputName), &needed) &&
+        wcscmp(currentName, inputName) == 0;
+    CloseDesktop(input);
+    return same;
+}
+
 LRESULT CmainDlg::onTrayNotify(WPARAM wParam, LPARAM lParam)
 {
     statistics.trayNotifyTime = CTime::GetCurrentTime().GetTime();
@@ -2532,13 +2649,19 @@ LRESULT CmainDlg::onTrayNotify(WPARAM wParam, LPARAM lParam)
                 //set focus to the hWnd (sending Alt allows to bypass limitation)
                 keyInput.ki.wVk = VK_MENU;
                 keyInput.ki.dwFlags = 0;   //0 for key press
-                SendInput(1, &keyInput, sizeof(INPUT));
+                // Never inject keyboard events from a background desktop.
+                bool inputDesktop = IsCurrentInputDesktop();
+                if (inputDesktop) {
+                    SendInput(1, &keyInput, sizeof(INPUT));
+                }
 
                 SetForegroundWindow(); //sets the focus
 
                 keyInput.ki.wVk = VK_MENU;
                 keyInput.ki.dwFlags = KEYEVENTF_KEYUP;  //for key release
-                SendInput(1, &keyInput, sizeof(INPUT));
+                if (inputDesktop) {
+                    SendInput(1, &keyInput, sizeof(INPUT));
+                }
             }
         }
         else
@@ -2704,9 +2827,7 @@ void CmainDlg::MainPopupMenu(bool isMenuButton)
         tracker->AppendMenu(MF_SEPARATOR);
         separator = true;
     }
-    str = Translate(_T("Help"));
-    str.AppendFormat(_T("\tv%s"), _T(_GLOBAL_VERSION));
-    tracker->AppendMenu(MF_STRING, ID_MENU_HELP, str);
+    tracker->AppendMenu(MF_STRING, ID_MENU_ABOUT, Translate(_T("About")));
     separator = false;
 
         tracker->AppendMenu(MF_SEPARATOR);
@@ -2924,6 +3045,31 @@ void CmainDlg::OnTimerNetworkChange()
     }
 }
 
+void CmainDlg::OnTimerRegistrationRetry()
+{
+    if (!is_pjsua_running() || !accountSettings.accountId ||
+        !pjsua_acc_is_valid(account)) {
+        return;
+    }
+    pjsua_acc_info info;
+    if (pjsua_acc_get_info(account, &info) != PJ_SUCCESS || !info.has_registration) {
+        return;
+    }
+    // Keep PJSIP's normal refresh schedule for a healthy registration. A
+    // missing registration client uses EXPIRES_NOT_SPECIFIED, not zero.
+    if (info.status >= 200 && info.status < 300 &&
+        info.reg_last_err == PJ_SUCCESS && info.expires > 0 &&
+        info.expires != PJSIP_EXPIRES_NOT_SPECIFIED) {
+        return;
+    }
+    // PJSIP only automatically retries selected failure responses. This
+    // watchdog also retries other errors and immediate DNS/transport failures.
+    // An in-flight transaction remains responsible for its own retransmissions;
+    // set_registration returns busy rather than starting a concurrent one.
+    PJ_LOG(3, (THIS_FILENAME, "Retrying unavailable SIP registration"));
+    pjsua_acc_set_registration(account, PJ_TRUE);
+}
+
 LRESULT CmainDlg::OnRestart(WPARAM wParam, LPARAM lParam)
 {
     OnClose();
@@ -3129,6 +3275,14 @@ void CmainDlg::OnRestoreOtherAudio()
 
 void CmainDlg::OnTimer(UINT_PTR TimerVal)
 {
+    if (TimerVal == IDT_TIMER_CUSTOM_UPDATE) {
+        OnTimerCustomUpdate();
+        return;
+    }
+    if (TimerVal == IDT_TIMER_REGISTRATION_RETRY) {
+        OnTimerRegistrationRetry();
+        return;
+    }
     if (TimerVal == IDT_TIMER_AUDIO_FOCUS) {
         UpdateAudioFocus();
         return;
@@ -3272,35 +3426,6 @@ void CmainDlg::PJCreateRaw()
     if (accountSettings.audioCodecs.IsEmpty())
     {
         accountSettings.audioCodecs = _T(_GLOBAL_CODECS_ENABLED);
-    }
-
-    // check updates
-    if (accountSettings.updatesInterval != _T("never"))
-    {
-        CTime t = CTime::GetCurrentTime();
-        time_t time = t.GetTime();
-        int days;
-        if (accountSettings.updatesInterval == _T("daily"))
-        {
-            days = 1;
-        }
-        else if (accountSettings.updatesInterval == _T("monthly"))
-        {
-            days = 30;
-        }
-        else if (accountSettings.updatesInterval == _T("quarterly"))
-        {
-            days = 90;
-        }
-        else
-        {
-            days = 7;
-        }
-        if (accountSettings.updatesInterval == _T("always") || accountSettings.checkUpdatesTime + days * 86400 < time) {
-            CheckUpdates();
-            accountSettings.checkUpdatesTime = time;
-            accountSettings.SettingsSave();
-        }
     }
 
 #ifdef _GLOBAL_VIDEO
@@ -3818,6 +3943,7 @@ void CmainDlg::PJDestroy(bool exit)
     KillTimer(IDT_TIMER_DIRECTORY);
     KillTimer(IDT_TIMER_NETWORK_CHANGED);
     KillTimer(IDT_TIMER_SWITCH_DEVICES);
+    KillTimer(IDT_TIMER_REGISTRATION_RETRY);
 
     usersDirectoryLoaded = false;
     shortcutsURLLoaded = false;
@@ -3897,6 +4023,11 @@ void CmainDlg::PJAccountConfig(pjsua_acc_config * acc_cfg, Account * account)
     }
 
     acc_cfg->reg_timeout = account->registerRefresh;
+    // The library defaults to five minutes between retries and randomizes
+    // the delay. Bound retry waits even during a prolonged server outage.
+    acc_cfg->reg_retry_interval = 10;
+    acc_cfg->reg_first_retry_interval = 5;
+    acc_cfg->reg_retry_random_interval = 0;
 
     if (account->srtp == _T("optional")) {
         acc_cfg->use_srtp = PJMEDIA_SRTP_OPTIONAL;
@@ -4008,6 +4139,7 @@ void CmainDlg::PJAccountAdd()
 
 void CmainDlg::PJAccountAddRaw()
 {
+    m_registrationAuthErrorShown = false;
     CString str;
 
     CString title = _T(_GLOBAL_NAME_VISIBLE);
@@ -4066,6 +4198,9 @@ void CmainDlg::PJAccountAddRaw()
         if (acc_cfg.register_on_acc_add == PJ_FALSE) {
             Subscribe();
         }
+        else {
+            SetTimer(IDT_TIMER_REGISTRATION_RETRY, 25000, NULL);
+        }
     }
     if (!ok) {
         if (status != -1) {
@@ -4114,6 +4249,7 @@ void CmainDlg::PJAccountAddLocal()
  */
 void CmainDlg::PJAccountDelete(bool deep, bool exit, CStringA code)
 {
+    KillTimer(IDT_TIMER_REGISTRATION_RETRY);
     Unsubscribe();
     if (pjsua_acc_is_valid(account)) {
         pjsua_acc_del(account);
@@ -5109,6 +5245,7 @@ LRESULT CmainDlg::onShellHookMessage(WPARAM wParam, LPARAM lParam)
 
 LRESULT CmainDlg::onCallAnswer(WPARAM wParam, LPARAM lParam)
 {
+    bool answered = false;
     if (is_pjsua_running()) {
         pjsua_call_id call_id = wParam;
         pjsua_call_info call_info;
@@ -5118,8 +5255,8 @@ LRESULT CmainDlg::onCallAnswer(WPARAM wParam, LPARAM lParam)
                     pjsua_call_answer(call_id, -lParam, NULL, NULL);
                     return 0;
                 }
-                if (accountSettings.singleMode && !messagesDlg->HasAttendedTransfer()) {
-                    msip_call_hangup_all_noincoming();
+                if (accountSettings.singleMode && !messagesDlg->PrepareIncomingAnswer(call_id, int(lParam))) {
+                    return 0;
                 }
                 call_user_data* answering_data = (call_user_data*)pjsua_call_get_user_data(call_id);
                 if (!answering_data) {
@@ -5142,6 +5279,7 @@ LRESULT CmainDlg::onCallAnswer(WPARAM wParam, LPARAM lParam)
                 call_setting.vid_cnt = 0;
 #endif
                 if (pjsua_call_answer2(call_id, &call_setting, 200, NULL, NULL) == PJ_SUCCESS) {
+                    answered = true;
                     callIdIncomingIgnore = MSIP::PjToStr(&call_info.call_id);
                 }
                 else {
@@ -5181,7 +5319,7 @@ LRESULT CmainDlg::onCallAnswer(WPARAM wParam, LPARAM lParam)
             }
         }
     }
-    return 0;
+    return answered ? 1 : 0;
 }
 
 LRESULT CmainDlg::onCallHangup(WPARAM wParam, LPARAM lParam)
@@ -5306,6 +5444,10 @@ BOOL CmainDlg::OnQueryEndSession()
 
 void CmainDlg::OnClose()
 {
+    if (customUpdates) {
+        std::lock_guard<std::mutex> lock(customUpdates->mutex);
+        customUpdates->closed = true;
+    }
     statistics.closeTime = CTime::GetCurrentTime().GetTime();
     g_bClosingApp = true;
 
@@ -5383,9 +5525,36 @@ void CmainDlg::OnMenuWebsite()
     MSIP::OpenURL(url);
 }
 
-void CmainDlg::OnMenuHelp()
+static HRESULT CALLBACK AboutDialogCallback(HWND, UINT notification, WPARAM, LPARAM, LONG_PTR)
 {
-    OpenHelp();
+    if (notification == TDN_HYPERLINK_CLICKED) {
+        MSIP::OpenURL(_T("https://github.com/AvrumFeldman/microsip-custom"));
+    }
+    return S_OK;
+}
+
+void CmainDlg::OnMenuAbout()
+{
+    CString heading;
+    heading.Format(_T("%s %s"), _T(_GLOBAL_NAME_VISIBLE), _T(_GLOBAL_VERSION));
+    CString content;
+    content.Format(_T("Version %s\n\nAn independently maintained fork of MicroSIP.\n\n")
+        _T("Repository: <a href=\"https://github.com/AvrumFeldman/microsip-custom\">AvrumFeldman/microsip-custom</a>\n\n")
+        _T("Based on MicroSIP 3.22.16.\nCopyright (C) 2011-2026 MicroSIP and contributors.\nGPL-2.0-or-later; combined distribution under GPLv3."), _T(_GLOBAL_VERSION));
+    TASKDIALOGCONFIG about = {};
+    about.cbSize = sizeof(about);
+    about.hwndParent = m_hWnd;
+    about.hInstance = AfxGetInstanceHandle();
+    about.dwFlags = TDF_ENABLE_HYPERLINKS | TDF_ALLOW_DIALOG_CANCELLATION | TDF_SIZE_TO_CONTENT;
+    about.dwCommonButtons = TDCBF_OK_BUTTON;
+    about.pszWindowTitle = _T("About MicroSIP Custom");
+    about.pszMainInstruction = _T(_GLOBAL_NAME_VISIBLE);
+    about.pszContent = content;
+    about.pfCallback = AboutDialogCallback;
+    if (FAILED(TaskDialogIndirect(&about, nullptr, nullptr, nullptr))) {
+        MessageBox(heading + _T("\n\nhttps://github.com/AvrumFeldman/microsip-custom"),
+            _T("About MicroSIP Custom"), MB_OK | MB_ICONINFORMATION);
+    }
 }
 
 void CmainDlg::OnMenuAddl()
@@ -5918,88 +6087,158 @@ void CmainDlg::OpenTransferDlg(CWnd * pParent, msip_action action, pjsua_call_id
 
 void CmainDlg::OnCheckUpdates()
 {
-    updateCheckerShow = true;
-    CheckUpdates();
+    CheckUpdates(true);
 }
 
-void CmainDlg::CheckUpdates()
+bool CmainDlg::HasCallsForUpdate()
 {
-    CString url;
-    url = _T("http://update.microsip.org/softphone-update.txt");
-    url.AppendFormat(_T("?version=%s&client=%s&lang=%s&type=%s"),
-        _T(_GLOBAL_VERSION),
-        CString(urlencode(MSIP::Utf8EncodeUni(CString(
-            _T(_GLOBAL_NAME_VISIBLE)
-        )))),
-        CString(urlencode(MSIP::Utf8EncodeUni(CString(langPack.language)))),
-        accountSettings.isPortable ? _T("portable") : _T("exe"));
-#ifndef _GLOBAL_VIDEO
-    url.Append(_T("&lite=1"));
-#endif
-    URLGetAsync(url, m_hWnd, UM_UPDATE_CHECKER_LOADED);
+    if (!is_pjsua_running()) return false;
+    pjsua_call_id ids[PJSUA_MAX_CALLS];
+    unsigned count = PJSUA_MAX_CALLS;
+    return pjsua_enum_calls(ids, &count) != PJ_SUCCESS || count != 0;
 }
 
-LRESULT CmainDlg::OnUpdateCheckerLoaded(WPARAM wParam, LPARAM lParam)
+void CmainDlg::CheckUpdates(bool manual)
 {
-    bool found = false;
-    URLGetAsyncData* response = (URLGetAsyncData*)wParam;
-    if (response->statusCode == 200) {
-        if (!response->body.IsEmpty() && response->body.Left(4) == "http") {
-            int pos = response->body.Find("\n");
-            if (pos > 0) {
-                CStringA url = response->body.Left(pos);
-                url.Trim();
-                bool allowed = false;
-                DWORD dwServiceType;
-                CString strServer;
-                CString strObject;
-                INTERNET_PORT nPort;
-                if (AfxParseURL(CString(url), dwServiceType, strServer, strObject, nPort) && dwServiceType == AFX_INET_SERVICE_HTTPS && strServer.Right(13) == _T(".microsip.org")) {
-                    allowed = true;
-                }
-                int pos1 = response->body.Find("\n", pos + 1);
-                if (allowed && pos1 > pos) {
-                    CStringA version = response->body.Mid(pos, pos1 - pos);
-                    version.Trim();
-                    CString info = MSIP::Utf8DecodeUni(response->body.Mid(pos1 + 1));
-                    info.Trim();
-                    CStringA our = _GLOBAL_VERSION;
-                    int count = version.Replace(".", ".");
-                    if (count < 4) {
-                        int i = count;
-                        while (i < 3) {
-                            version.Append(".0");
-                            i++;
-                        }
-                        count = our.Replace(".", ".");
-                        i = count;
-                        while (i < 3) {
-                            our.Append(".0");
-                            i++;
-                        }
-                        unsigned long ia = inet_addr(version.GetString());
-                        if (ia != -1 && htonl(ia) > htonl(inet_addr(our.GetString()))) {
-                            CString caption;
-                            caption.Format(_T("%s %s"), _T(_GLOBAL_NAME_VISIBLE), Translate(_T("Update Available")));
-                            CString message = Translate(_T("Do you want to update now?"));
-                            if (!info.IsEmpty()) {
-                                message.AppendFormat(_T("\r\n\r\n%s"), info);
-                            }
-                            found = true;
-                            if (::MessageBox(this->m_hWnd, message, caption, MB_YESNO | MB_ICONQUESTION) == IDYES) {
-                                MSIP::OpenURL(MSIP::Utf8DecodeUni(url));
-                            }
-                        }
-                    }
-                }
-            }
+    if (!customUpdates || installingCustomUpdate) return;
+    bool running, ready;
+    std::unique_ptr<CustomUpdate::Release> available;
+    {
+        std::lock_guard<std::mutex> lock(customUpdates->mutex);
+        if (customUpdates->closed) return;
+        running = customUpdates->running;
+        ready = bool(customUpdates->prepared);
+        if (manual) customUpdates->manual = true;
+        if (!running && !ready) available = std::move(customUpdates->available);
+        // Bound failures/rate limits separately from the configured interval.
+        if (!running && !ready && !available) customUpdates->retryAfter = GetTickCount64() + 15 * 60000;
+    }
+    if (running) {
+        if (manual) BaloonPopup(_T("MicroSIP Custom updates"), _T("An update check or download is already in progress."), NIIF_INFO);
+        return;
+    }
+    if (ready) {
+        {
+            std::lock_guard<std::mutex> lock(customUpdates->mutex);
+            customUpdates->manual = false;
+        }
+        if (HasCallsForUpdate()) {
+            if (manual) BaloonPopup(_T("Update ready"), _T("The update will install after all calls have ended."), NIIF_INFO);
+        }
+        else ApplyCustomUpdate();
+        return;
+    }
+    if (available) {
+        {
+            std::lock_guard<std::mutex> lock(customUpdates->mutex);
+            customUpdates->manual = false;
+        }
+        OfferCustomUpdate(*available);
+        return;
+    }
+    if (!StartCustomUpdateWork(customUpdates, m_hWnd, false) && manual) {
+        MessageBox(_T("Unable to start the GitHub update check."), _T("MicroSIP Custom updates"), MB_ICONERROR);
+    }
+}
+
+void CmainDlg::OnTimerCustomUpdate()
+{
+    if (!customUpdates || installingCustomUpdate || g_bClosingApp) return;
+    bool pending;
+    {
+        std::lock_guard<std::mutex> lock(customUpdates->mutex);
+        if (customUpdates->closed || customUpdates->running) return;
+        pending = bool(customUpdates->prepared) || bool(customUpdates->available);
+        if (!pending && GetTickCount64() < customUpdates->retryAfter) return;
+    }
+    if (pending) {
+        if (!HasCallsForUpdate()) CheckUpdates();
+        return;
+    }
+    if (accountSettings.updatesInterval == _T("never")) return;
+    int days = 7;
+    if (accountSettings.updatesInterval == _T("daily")) days = 1;
+    else if (accountSettings.updatesInterval == _T("monthly")) days = 30;
+    else if (accountSettings.updatesInterval == _T("quarterly")) days = 90;
+    else if (accountSettings.updatesInterval == _T("always")) days = 0;
+    const __time64_t now = CTime::GetCurrentTime().GetTime();
+    if (!accountSettings.checkUpdatesTime || now < accountSettings.checkUpdatesTime ||
+        now - accountSettings.checkUpdatesTime >= __time64_t(days) * 86400) CheckUpdates();
+}
+
+void CmainDlg::OfferCustomUpdate(const CustomUpdate::Release& release)
+{
+    if (HasCallsForUpdate()) {
+        std::lock_guard<std::mutex> lock(customUpdates->mutex);
+        customUpdates->available = std::make_unique<CustomUpdate::Release>(release);
+        return;
+    }
+    CString prompt;
+    prompt.Format(_T("MicroSIP Custom %s is available from GitHub.\n\n")
+        _T("Download, verify and restart to install it? Your SIP accounts, contacts, call history and recordings will be preserved."), release.version.c_str());
+    if (MessageBox(prompt, _T("MicroSIP Custom update"), MB_YESNO | MB_ICONQUESTION | MB_DEFBUTTON2) != IDYES) return;
+    if (!StartCustomUpdateWork(customUpdates, m_hWnd, true, release)) {
+        MessageBox(_T("Unable to start the update download."), _T("MicroSIP Custom updates"), MB_ICONERROR);
+        return;
+    }
+    BaloonPopup(_T("MicroSIP Custom updates"), _T("Downloading and verifying the GitHub release. You can keep using MicroSIP while it downloads."), NIIF_INFO);
+}
+
+void CmainDlg::ApplyCustomUpdate()
+{
+    if (HasCallsForUpdate()) return;
+    std::unique_ptr<CustomUpdate::StageResult> stage;
+    {
+        std::lock_guard<std::mutex> lock(customUpdates->mutex);
+        stage = std::move(customUpdates->prepared);
+    }
+    if (!stage) return;
+    std::wstring error;
+    if (!CustomUpdate::LaunchApply(*stage, accountSettings.exeFile.GetString(), GetCurrentProcessId(), error,
+        accountSettings.customProfileDirectory.GetString())) {
+        MessageBox(error.c_str(), _T("MicroSIP Custom update failed"), MB_ICONERROR);
+        return;
+    }
+    installingCustomUpdate = true;
+    OnMenuExit();
+}
+
+LRESULT CmainDlg::OnUpdateCheckerLoaded(WPARAM, LPARAM)
+{
+    std::unique_ptr<CustomUpdate::CheckResult> check;
+    std::unique_ptr<CustomUpdate::StageResult> stage;
+    bool manual;
+    {
+        std::lock_guard<std::mutex> lock(customUpdates->mutex);
+        if (customUpdates->closed) return 0;
+        customUpdates->running = false;
+        manual = customUpdates->manual;
+        customUpdates->manual = false;
+        check = std::move(customUpdates->checked);
+        stage = std::move(customUpdates->staged);
+    }
+    if (check) {
+        if (!check->error.empty()) {
+            if (manual) MessageBox(check->error.c_str(), _T("GitHub update check failed"), MB_ICONERROR);
+        }
+        else {
+            accountSettings.checkUpdatesTime = int(CTime::GetCurrentTime().GetTime());
+            accountSettings.GlobalSave();
+            if (check->updateAvailable) OfferCustomUpdate(check->release);
+            else if (manual) MessageBox(_T("MicroSIP Custom is up to date with the latest stable GitHub release."), _T("MicroSIP Custom updates"), MB_ICONINFORMATION);
         }
     }
-    delete response;
-    if (updateCheckerShow && !found) {
-        MessageBox(_T("No new version found"), _T(""), MB_ICONINFORMATION);
+    if (stage) {
+        if (!stage->error.empty()) MessageBox(stage->error.c_str(), _T("MicroSIP Custom update failed"), MB_ICONERROR);
+        else {
+            {
+                std::lock_guard<std::mutex> lock(customUpdates->mutex);
+                customUpdates->prepared = std::move(stage);
+            }
+            if (HasCallsForUpdate()) BaloonPopup(_T("Update ready"), _T("The verified update will install after all calls have ended."), NIIF_INFO);
+            else ApplyCustomUpdate();
+        }
     }
-    updateCheckerShow = false;
     return 0;
 }
 

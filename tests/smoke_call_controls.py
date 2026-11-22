@@ -3,15 +3,21 @@
 Usage: python tests/smoke_call_controls.py PID
 Use an isolated portable copy with a blank local account, singleMode=1,
 sourcePort=5096 and callAudioMode=0. No external calls are made.
+The private-desktop harness supplies MICROSIP_TEST_SIP_PORT for other fixture
+ports; direct runs default to 5096.
 """
 import ctypes as c
 from ctypes import wintypes as w
 import itertools
+import os
 import re
 import socket
 import sys
 import time
 import uuid
+
+local_port = int(os.environ.get('MICROSIP_TEST_SIP_PORT', '5096'))
+assert 1024 <= local_port <= 65535, 'Invalid synthetic local SIP port'
 
 user = c.WinDLL('user32', use_last_error=True)
 callback_type = c.WINFUNCTYPE(w.BOOL, w.HWND, w.LPARAM)

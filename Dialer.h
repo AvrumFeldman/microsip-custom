@@ -160,6 +160,7 @@ public:
 #endif
     afx_msg void OnBnClickedMessage();
     afx_msg void OnBnClickedHold();
+    afx_msg void OnHoldDropdown(NMHDR* header, LRESULT* result);
     afx_msg void OnBnClickedTransfer();
     afx_msg void OnTransferDropdown(NMHDR* header, LRESULT* result);
     afx_msg void OnBnClickedEnd();

@@ -3,15 +3,20 @@
 Usage: python tests/smoke_calls.py PID PATH_TO_TEST_LOG
 The instance must use a blank local account and callAudioMode=2 restricted to
 AudioFocusTests.exe. No public phone numbers, accounts, or recordings are used.
+The harness supplies MICROSIP_TEST_SIP_PORT; direct runs default to port 5096.
 """
 import ctypes as c
 from ctypes import wintypes as w
 import pathlib
+import os
 import re
 import socket
 import sys
 import time
 import uuid
+
+local_port = int(os.environ.get('MICROSIP_TEST_SIP_PORT', '5096'))
+assert 1024 <= local_port <= 65535, 'Invalid synthetic local SIP port'
 
 user = c.WinDLL('user32', use_last_error=True)
 kernel = c.WinDLL('kernel32', use_last_error=True)
@@ -199,13 +204,13 @@ def remote_bye(invite, address):
 def incoming_call():
     call_id = uuid.uuid4().hex
     from_header = f'<sip:incoming@127.0.0.1:{port}>;tag=caller'
-    invite = (f'INVITE sip:custom-test@127.0.0.1:5096 SIP/2.0\r\n'
+    invite = (f'INVITE sip:custom-test@127.0.0.1:{local_port} SIP/2.0\r\n'
               f'Via: SIP/2.0/UDP 127.0.0.1:{port};branch=z9hG4bK{uuid.uuid4().hex}\r\n'
               f'From: {from_header}\r\nTo: <sip:custom-test@127.0.0.1>\r\n'
               f'Call-ID: {call_id}\r\nCSeq: 1 INVITE\r\nMax-Forwards: 70\r\n'
               f'Contact: <sip:incoming@127.0.0.1:{port}>\r\nContent-Type: application/sdp\r\n'
               f'Content-Length: {len(sdp)}\r\n\r\n{sdp}')
-    peer.sendto(invite.encode(), ('127.0.0.1', 5096))
+    peer.sendto(invite.encode(), ('127.0.0.1', local_port))
     return invite, call_id, from_header
 
 def incoming_response(call_id, status):
@@ -219,13 +224,13 @@ def incoming_response(call_id, status):
 
 def cancel_incoming(invite, call_id):
     # CANCEL must reuse the INVITE transaction's branch and original To.
-    cancel = ('CANCEL sip:custom-test@127.0.0.1:5096 SIP/2.0\r\n'
+    cancel = (f'CANCEL sip:custom-test@127.0.0.1:{local_port} SIP/2.0\r\n'
               + '\r\n'.join(f'{name}: {header(invite, name)}'
                             for name in ('Via', 'From', 'To', 'Call-ID'))
               + '\r\nCSeq: 1 CANCEL\r\nMax-Forwards: 70\r\nContent-Length: 0\r\n\r\n')
-    peer.sendto(cancel.encode(), ('127.0.0.1', 5096))
+    peer.sendto(cancel.encode(), ('127.0.0.1', local_port))
     ended, address = incoming_response(call_id, 487)
-    ack = ('ACK sip:custom-test@127.0.0.1:5096 SIP/2.0\r\n'
+    ack = (f'ACK sip:custom-test@127.0.0.1:{local_port} SIP/2.0\r\n'
            + '\r\n'.join(f'{name}: {header(ended, name)}'
                          for name in ('Via', 'From', 'To', 'Call-ID'))
            + '\r\nCSeq: 1 ACK\r\nMax-Forwards: 70\r\nContent-Length: 0\r\n\r\n')
@@ -322,7 +327,7 @@ try:
     assert 'WMME capture stream started' not in log()[incoming_baseline:], 'ringing opened microphone'
     command('/answer')
     answered, incoming_address = incoming_response(incoming_id, 200)
-    ack = (f'ACK sip:custom-test@127.0.0.1:5096 SIP/2.0\r\n'
+    ack = (f'ACK sip:custom-test@127.0.0.1:{local_port} SIP/2.0\r\n'
            f'Via: SIP/2.0/UDP 127.0.0.1:{port};branch=z9hG4bK{uuid.uuid4().hex}\r\n'
            f'From: {incoming_from}\r\nTo: {header(answered, "To")}\r\n'
            f'Call-ID: {incoming_id}\r\nCSeq: 1 ACK\r\nMax-Forwards: 70\r\nContent-Length: 0\r\n\r\n')

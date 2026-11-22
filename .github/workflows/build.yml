@@ -33,13 +33,16 @@ jobs:
         run: |
           $vswhere = "${env:ProgramFiles(x86)}/Microsoft Visual Studio/Installer/vswhere.exe"
           $vs = & $vswhere -latest -products '*' -requires Microsoft.VisualStudio.Component.VC.ATLMFC -property installationPath
-          foreach ($test in @('MarkupTests', 'DialPlanTests', 'BluetoothRecoveryTests')) {
+          foreach ($test in @('MarkupTests', 'DialPlanTests', 'BluetoothRecoveryTests', 'StartupRegistrationTests', 'CustomProfileTests', 'CustomUpdateTests')) {
             & "$vs/MSBuild/Current/Bin/MSBuild.exe" "tests/$test.vcxproj" /p:Configuration=Release /p:Platform=Win32 /v:minimal /nologo
             if ($LASTEXITCODE) { throw "$test build failed." }
             & "./out/$test.exe"
             if ($LASTEXITCODE) { throw "$test failed." }
           }
-      - name: Package clean portable build and complete source assets
+      - name: Verify updater installation and rollback with disposable fixtures
+        shell: pwsh
+        run: python tests/smoke_custom_update.py
+      - name: Package clean custom build and complete source assets
         shell: pwsh
         run: ./package-custom.ps1 -BuildRoot "$env:RUNNER_TEMP/microsip-build"
       - uses: actions/upload-artifact@v4

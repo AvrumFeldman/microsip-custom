@@ -169,6 +169,10 @@ void Transfer::ClearDropdown()
 void Transfer::OnDestroy()
 {
 	mainDlg->transferDlg = nullptr;
+	if (action == MSIP_ACTION_NEW_CALL && !newCallSubmitted &&
+		mainDlg->messagesDlg && ::IsWindow(mainDlg->messagesDlg->GetSafeHwnd())) {
+		mainDlg->messagesDlg->CancelNewCall(callId, callDialog);
+	}
 	ClearDropdown();
 	CThemeDialog::OnDestroy();
 }
@@ -275,6 +279,10 @@ void Transfer::SetAction(msip_action action, pjsua_call_id call_id)
 	if (action == MSIP_ACTION_INVITE) {
 		SetWindowText(Translate(_T("Invite to Conference")));
 	}
+	if (action == MSIP_ACTION_NEW_CALL) {
+		SetWindowText(Translate(_T("New call")));
+		GetDlgItem(IDOK)->SetWindowText(Translate(_T("Call")));
+	}
 	GetDlgItem(IDOK)->ShowWindow(!buttons ? SW_SHOW : SW_HIDE);
 	GetDlgItem(IDC_TRANSFER_ATTENDED)->ShowWindow(buttons ? SW_SHOW : SW_HIDE);
 	GetDlgItem(IDC_TRANSFER_BLIND)->ShowWindow(buttons ? SW_SHOW : SW_HIDE);
@@ -293,6 +301,10 @@ bool Transfer::Action(msip_action action)
 		number = *(CString*)combobox->GetItemData(i);
 	}
 	if (!number.IsEmpty()) {
+		if (action == MSIP_ACTION_NEW_CALL) {
+			newCallSubmitted = mainDlg->messagesDlg->SubmitNewCall(callId, callDialog, number);
+			return newCallSubmitted;
+		}
 		// Incoming call waiting can change the selected tab while this
 		// modeless dialog is open. Keep the action on its original SIP dialog.
 		pjsua_call_info info;

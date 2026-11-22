@@ -1,4 +1,4 @@
-MicroSIP Custom 3.22.16.5 - Windows voice calls
+MicroSIP Custom 3.22.16.6 - Windows voice calls
 ============================================
 
 This is an independently maintained fork, not an official MicroSIP release.
@@ -8,12 +8,29 @@ PRs are welcome and appreciated, including AI-assisted and AI-generated ones.
 
 Start
 -----
-Extract to a separate writable folder and run microsip.exe. Keep
-MicroSIPAudioGuard.exe beside it. Close any other MicroSIP instance first.
-Add your SIP account and re-enter its password. Official saved passwords
-cannot be imported because the public source omits the official encryption
-key. Your original installation is not replaced. Contacts can be exported
-from your original copy and imported here.
+Extract to a writable folder and run microsip.exe. Keep MicroSIPAudioGuard.exe
+beside it. Custom builds reuse accounts/settings/contacts/history under
+%APPDATA%\MicroSIP Custom, with logs/new recordings under %LOCALAPPDATA%\MicroSIP Custom.
+For the first upgrade from an older custom portable copy, close it and put
+the new application files into that existing custom folder. On launch its
+accounts, passwords, contacts and history migrate once without deleting the
+originals. Later builds reuse the shared profile, even from another folder.
+Release ZIPs contain no live microsip.ini that could overwrite your accounts.
+Create an empty microsip.portable file beside the exe for explicit portable
+mode. That copy continues using its adjacent accounts/settings/databases.
+Only a first migration from official MicroSIP needs account/password entry:
+the public source omits the official password encryption key. Custom account
+passwords are preserved between custom builds.
+
+Updates
+-------
+Menu > Check for updates uses stable releases from our GitHub repository.
+Checks default to daily; Settings controls the interval. Download/restart
+requires confirmation. The updater verifies archive/file checksums and waits
+for all calls to end before replacing application files. Accounts, contacts,
+history, recordings and existing sounds are preserved. Failed replacement
+attempts restore backed-up files when possible. Official MicroSIP update
+checks and the inherited build-age expiration are disabled in this build.
 
 Audio changes
 -------------
@@ -57,6 +74,20 @@ Exclusive-mode players may not follow Windows session mute controls.
 
 Calls
 -----
+SIP registration retries use bounded delays (5-10 seconds for native retries,
+25 seconds for other failures), with no growing backoff.
+
+Answering a second incoming call in single-call mode holds the first call.
+Hold opens a menu even with one connected call. Choose Hold current call,
+Resume current call, New call, or Switch to another connected caller.
+Settings > Hold before a new call controls when the first party is held:
+when you press Call (default) or when you choose New call. Dialing waits
+for the hold response. Switching holds the current party before resuming
+the selected party.
+Incoming history also records unnamed callers and calls rejected by DND or
+concurrent-call limits. A conflicting Windows startup entry prompts to switch
+to this custom executable; declining preserves the existing entry.
+
 CONF > Add participant / Remove participant works in single-call mode.
 Choose the participant to remove; only that conference leg is disconnected.
 

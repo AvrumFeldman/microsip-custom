@@ -47,10 +47,6 @@ bool CallsService::Validate(const Call& call, std::string* error)
         if (error) *error = "Invalid call type: " + std::to_string(call.type);
         return false;
     }
-    else if (call.name.IsEmpty()) {
-        if (error) *error = "Name is empty";
-        return false;
-    }
     else if (call.number.IsEmpty()) {
         if (error) *error = "Phone number is empty";
         return false;

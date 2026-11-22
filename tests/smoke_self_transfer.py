@@ -5,6 +5,7 @@ Usage: python tests/smoke_self_transfer.py PID [TRANSCRIPT.json] [--incoming-ori
 The PID must be an isolated portable MicroSIP instance with sourcePort=5096,
 singleMode=1, callWaiting=1, and local username=custom-test. This test sends
 SIP only to 127.0.0.1 and never reads the installed account configuration.
+The harness overrides the default port through MICROSIP_TEST_SIP_PORT.
 """
 import argparse
 import ctypes as c
@@ -56,7 +57,7 @@ class LoopbackPBX:
 
     def request_to_incoming(self, method, same_transaction=False):
         assert self.incoming
-        target = 'sip:custom-test@127.0.0.1:5096'
+        target = f'sip:custom-test@127.0.0.1:{sip.local_port}'
         branch = sip.header(self.incoming, 'Via')
         if method == 'BYE' or (method == 'ACK' and not same_transaction):
             branch = f'SIP/2.0/UDP 127.0.0.1:{sip.port};branch=z9hG4bK{uuid.uuid4().hex}'
@@ -69,7 +70,7 @@ class LoopbackPBX:
                   f'Call-ID: {self.incoming_id}\r\nCSeq: {sequence} {method}\r\n'
                   f'Max-Forwards: 70\r\nContact: <sip:relay@127.0.0.1:{sip.port}>\r\n'
                   'Content-Length: 0\r\n\r\n')
-        sip.peer.sendto(packet.encode(), ('127.0.0.1', 5096))
+        sip.peer.sendto(packet.encode(), ('127.0.0.1', sip.local_port))
 
     def receive_one(self):
         self.ping()
@@ -87,7 +88,7 @@ class LoopbackPBX:
                     and sip.header(message, 'CSeq').endswith(' INVITE')):
                 if int(message.split()[1]) == 200:
                     packet = (
-                        'ACK sip:custom-test@127.0.0.1:5096 SIP/2.0\r\n'
+                        f'ACK sip:custom-test@127.0.0.1:{sip.local_port} SIP/2.0\r\n'
                         f'Via: SIP/2.0/UDP 127.0.0.1:{sip.port};branch=z9hG4bK{uuid.uuid4().hex}\r\n'
                         f'From: {sip.header(self.original, "From")}\r\nTo: {sip.header(message, "To")}\r\n'
                         f'Call-ID: {self.original_id}\r\nCSeq: 1 ACK\r\n'
@@ -156,7 +157,7 @@ class LoopbackPBX:
         if options.incoming_original:
             self.original_id = 'original-incoming-' + uuid.uuid4().hex
             self.original = self.make_incoming_invite(self.original_id, 'original', 'Original caller')
-            self.original_address = ('127.0.0.1', 5096)
+            self.original_address = ('127.0.0.1', sip.local_port)
             sip.peer.sendto(self.original.encode(), self.original_address)
             dialog = self.wait(self.ringing_dialog, 'Original incoming call did not ring')
             sip.send(dialog, 0x111, 1000, 0)
@@ -184,7 +185,7 @@ class LoopbackPBX:
         self.incoming = self.make_incoming_invite(self.incoming_id, 'custom-test', 'Self consultation', target_aor)
         caller_aor = sip.header(self.incoming, 'From').split('<', 1)[1].split('>', 1)[0]
         assert target_aor == caller_aor, f'Self-test AOR mismatch: {target_aor} != {caller_aor}'
-        sip.peer.sendto(self.incoming.encode(), ('127.0.0.1', 5096))
+        sip.peer.sendto(self.incoming.encode(), ('127.0.0.1', sip.local_port))
         dialog = self.wait(self.ringing_dialog, 'Self consultation did not expose Answer and Decline')
         assert not any(code >= 300 for code in self.statuses), f'Self consultation rejected: {self.statuses}'
         self.pump(.3)
@@ -194,10 +195,10 @@ class LoopbackPBX:
     def make_incoming_invite(call_id, username, display, caller_uri=None):
         caller_uri = caller_uri or f'sip:{username}@127.0.0.1'
         return (
-            'INVITE sip:custom-test@127.0.0.1:5096 SIP/2.0\r\n'
+            f'INVITE sip:custom-test@127.0.0.1:{sip.local_port} SIP/2.0\r\n'
             f'Via: SIP/2.0/UDP 127.0.0.1:{sip.port};branch=z9hG4bK{uuid.uuid4().hex}\r\n'
             f'From: "{display}" <{caller_uri}>;tag=loopback-test\r\n'
-            'To: <sip:custom-test@127.0.0.1:5096>\r\n'
+            f'To: <sip:custom-test@127.0.0.1:{sip.local_port}>\r\n'
             f'Call-ID: {call_id}\r\nCSeq: 1 INVITE\r\n'
             f'Contact: <sip:{username}@127.0.0.1:{sip.port}>\r\nMax-Forwards: 70\r\n'
             f'Content-Type: application/sdp\r\nContent-Length: {len(sip.sdp)}\r\n\r\n{sip.sdp}')

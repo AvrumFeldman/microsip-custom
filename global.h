@@ -88,6 +88,8 @@ enum EUserWndMessages
     UM_DBLCLICKTAB,
     UM_QUERYTAB,
     UM_UPDATE_CHECKER_LOADED,
+    IDT_TIMER_REGISTRATION_RETRY,
+    IDT_TIMER_CUSTOM_UPDATE,
 
 };
 
@@ -428,5 +430,7 @@ void msip_call_busy(pjsua_call_id call_id, const CString& reason = _T(""));
 void msip_call_recording_start(call_user_data* user_data, pjsua_call_info* call_info = NULL, int id = 0);
 void msip_call_recording_stop(call_user_data* user_data, int id = 0, bool force = false);
 CString msip_url_mask(CString url);
-void msip_startup_set(bool enable);
+bool msip_startup_enabled();
+bool msip_startup_set(bool enable);
+void msip_startup_check(CWnd* owner);
 CString GetAccountLabel(Account* acc, int i);

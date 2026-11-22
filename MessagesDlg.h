@@ -65,7 +65,7 @@ public:
 	bool CallCheck();
 	pjsua_call_id CurrentCallId();
 	void Call(BOOL hasVideo = FALSE);
-    pjsua_call_id PerformCall(CString number, bool hasVideo = false, pj_status_t* pStatus = nullptr, call_user_data* user_data = nullptr, bool consultation = false);
+    pjsua_call_id PerformCall(CString number, bool hasVideo = false, pj_status_t* pStatus = nullptr, call_user_data* user_data = nullptr, bool preserveCalls = false);
 	void AddMessage(MessagesContact* messagesContact, CString message, int type = MSIP_MESSAGE_TYPE_SYSTEM, BOOL blockForeground = FALSE, CTime* pTime = NULL);
 	MessagesContact* GetMessageContact(int i = -1);
 	MessagesContact* GetMessageContactInCall();
@@ -82,6 +82,9 @@ public:
 	void OnAttendedTransferResult(pjsua_call_id call_id, int status);
 	bool HasAttendedTransfer() const { return transferSource != PJSUA_INVALID_ID; }
 	bool HandleConsultationEnd();
+    bool PrepareIncomingAnswer(pjsua_call_id call_id, int video);
+    bool SubmitNewCall(pjsua_call_id source, const CString& dialog, const CString& number);
+    void CancelNewCall(pjsua_call_id source, const CString& dialog);
 
 	CClosableTabCtrl* tab;
 	MessagesContact* lastCall;
@@ -98,7 +101,7 @@ private:
     CClosableTabCtrl m_messagesTab;
 
     BOOL CloseTab(int i, BOOL safe = FALSE);
-    MessagesContact* StartCall(bool hasVideo = false, call_user_data* user_data = NULL, bool consultation = false);
+    MessagesContact* StartCall(bool hasVideo = false, call_user_data* user_data = NULL, bool preserveCalls = false);
 	bool StartAttendedTransfer(pjsua_call_id source, CString number);
 	void ResumeTransferSource();
 	bool TransferCallInfo(pjsua_call_id id, const CString& dialog, pjsua_call_info& info);
@@ -111,6 +114,37 @@ private:
 	CString transferPendingNumber;
 	ULONGLONG transferHoldDeadline = 0;
 	bool transferCancelPending = false;
+    bool BeginCallActivation(pjsua_call_id call_id, int video, bool answer);
+    void PollCallActivation();
+    void ClearCallActivation();
+    void SelectCall(pjsua_call_info& info);
+    pjsua_call_id activationTarget = PJSUA_INVALID_ID;
+    CString activationDialog;
+    bool activationAnswer = false;
+    int activationVideo = 0;
+    bool activationFailed = false;
+    bool activationResuming = false;
+    ULONGLONG activationDeadline = 0;
+    std::vector<std::pair<pjsua_call_id, CString>> activationHeld;
+
+    bool CanStartNewCall(pjsua_call_id source, const CString& dialog);
+    void PromptNewCall(pjsua_call_id source, const CString& dialog);
+    bool NewCallInProgress() const { return newCall.source != PJSUA_INVALID_ID && newCall.target == PJSUA_INVALID_ID; }
+    bool CanUseNewCallSource(pjsua_call_id source, const CString& dialog, pjsua_call_info& info);
+    bool HasOtherUnheldCall(pjsua_call_id source);
+    bool RequestNewCallHold(pjsua_call_info& source);
+    void PollNewCall();
+    void ResetNewCall(bool restoreSource = false);
+    struct NewCall {
+        pjsua_call_id source = PJSUA_INVALID_ID;
+        CString sourceDialog;
+        pjsua_call_id target = PJSUA_INVALID_ID;
+        CString targetDialog;
+        CString number;
+        ULONGLONG holdDeadline = 0;
+        bool resumeSource = false;
+        bool canceled = false;
+    } newCall;
 
 	CMenu menuTransfer;
 	CMenu menuConference;
@@ -145,6 +179,7 @@ public:
 	afx_msg void OnTransferDropdown(NMHDR* header, LRESULT* result);
 	afx_msg void OnBnClickedConference();
 	afx_msg void OnBnClickedHold();
+	void ShowHoldMenu();
 	afx_msg void OnBnClickedEnd();
 	afx_msg void OnCloseAllTabs(); 
 	afx_msg void OnGoToLastTab();

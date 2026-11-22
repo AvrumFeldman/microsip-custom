@@ -22,6 +22,7 @@
 #include "global.h"
 #include "Domain/Shortcut.h"
 #include "Domain/Statistics.h"
+#include "CustomProfile.h"
 
 struct AccountSettings {
 
@@ -29,6 +30,7 @@ struct AccountSettings {
 	Account account;
 	Account accountLocal;
 	bool singleMode;
+	bool holdOnNewCallEntry = false;
 	CString ringtone;
 	CString audioRingDevice;
 	CString audioOutputDevice;
@@ -154,6 +156,10 @@ struct AccountSettings {
 	CString appDataLocal;
 	CString appDataLocalRoot;
 	bool isPortable;
+	bool profileInUse = false;
+	CString profileIdentity;
+	CString customProfileDirectory;
+	std::shared_ptr<CustomProfile::Lease> profileLease;
 
 	int checkUpdatesTime;
 
@@ -176,7 +182,7 @@ struct AccountSettings {
 	bool enableShortcuts;
 	bool shortcutsBottom;
 	AccountSettings();
-	void Init();
+	void Init(const CString& customProfileDirectory = CString());
 	bool AccountLoad(int id, Account *account, CString filename = _T(""));
 	void AccountSave(int id, Account *account, CString filename = _T(""));
 	void AccountDelete(int id);

@@ -26,6 +26,7 @@
 #include "langpack.h"
 #include <Psapi.h>
 #include "DialPlan.h"
+#include "StartupRegistration.h"
 #include "addons.h"
 
 #ifdef UNICODE
@@ -1861,22 +1862,74 @@ CString msip_url_mask(CString url)
     return url;
 }
 
-void msip_startup_set(bool enable)
+bool msip_startup_enabled()
 {
     CRegKey regKey;
-    CString rab;
-    rab = _T("Software\\Microsoft\\Windows\\CurrentVersion\\Run");
-    if (regKey.Create(HKEY_CURRENT_USER, rab) == ERROR_SUCCESS) {
-        if (enable) {
-            CString str;
-            str.Format(_T("\"%s\" /minimized"), accountSettings.exeFile);
-            regKey.SetStringValue(_T(_GLOBAL_NAME_NICE), str);
-        }
-        else {
-            regKey.DeleteValue(_T(_GLOBAL_NAME_NICE));
-        }
-        regKey.Close();
+    std::wstring command;
+    return regKey.Open(HKEY_CURRENT_USER,
+        _T("Software\\Microsoft\\Windows\\CurrentVersion\\Run"), KEY_QUERY_VALUE) == ERROR_SUCCESS &&
+        StartupRegistration::ReadCommand(regKey, _T(_GLOBAL_NAME_NICE), command) &&
+        StartupRegistration::TargetsProfile(command, accountSettings.exeFile.GetString(),
+            accountSettings.customProfileDirectory.GetString());
+}
+
+bool msip_startup_set(bool enable)
+{
+    CRegKey regKey;
+    const LPCTSTR path = _T("Software\\Microsoft\\Windows\\CurrentVersion\\Run");
+    const LONG status = enable ? regKey.Create(HKEY_CURRENT_USER, path, nullptr,
+        REG_OPTION_NON_VOLATILE, KEY_QUERY_VALUE | KEY_SET_VALUE) :
+        regKey.Open(HKEY_CURRENT_USER, path, KEY_QUERY_VALUE | KEY_SET_VALUE);
+    if (status != ERROR_SUCCESS) {
+        return !enable && status == ERROR_FILE_NOT_FOUND;
     }
+    return StartupRegistration::Set(regKey, _T(_GLOBAL_NAME_NICE),
+        accountSettings.exeFile.GetString(), enable,
+        accountSettings.customProfileDirectory.GetString()) == ERROR_SUCCESS;
+}
+
+void msip_startup_check(CWnd* owner)
+{
+#ifdef MICROSIP_AUDIO_ONLY
+    CRegKey regKey;
+    std::wstring command;
+    if (regKey.Open(HKEY_CURRENT_USER,
+        _T("Software\\Microsoft\\Windows\\CurrentVersion\\Run"), KEY_QUERY_VALUE) != ERROR_SUCCESS ||
+        !StartupRegistration::ReadCommand(regKey, _T(_GLOBAL_NAME_NICE), command) ||
+        !StartupRegistration::IsMicroSIP(command) ||
+        StartupRegistration::TargetsExecutable(command, accountSettings.exeFile.GetString())) {
+        return;
+    }
+    // Remember a refusal for this exact entry. If the startup target changes,
+    // offer the migration again; portable and installed copies remain distinct.
+    CString declined;
+    GetPrivateProfileString(_T("Settings"), _T("startupMigrationDeclined"), _T(""),
+        declined.GetBuffer(32768), 32768, accountSettings.iniFile);
+    declined.ReleaseBuffer();
+    if (command == declined.GetString()) {
+        return;
+    }
+    CString prompt;
+    prompt.Format(_T("Windows is set to start another MicroSIP copy when you sign in.\n\n")
+        _T("Current startup:\n%s\n\nUse MicroSIP Custom from this location instead?\n%s"),
+        StartupRegistration::Executable(command).c_str(), accountSettings.exeFile.GetString());
+    if (owner->MessageBox(prompt, _T(_GLOBAL_NAME_VISIBLE),
+        MB_YESNO | MB_ICONQUESTION | MB_DEFBUTTON2) != IDYES) {
+        WritePrivateProfileString(_T("Settings"), _T("startupMigrationDeclined"),
+            command.c_str(), accountSettings.iniFile);
+        return;
+    }
+    // Avoid overwriting an entry changed while the prompt was open.
+    std::wstring currentCommand;
+    if (!StartupRegistration::ReadCommand(regKey, _T(_GLOBAL_NAME_NICE), currentCommand) ||
+        currentCommand != command) {
+        return;
+    }
+    if (!msip_startup_set(true)) {
+        owner->MessageBox(Translate(_T("Unable to update Windows startup. Try again in Settings.")),
+            _T(_GLOBAL_NAME_VISIBLE), MB_OK | MB_ICONERROR);
+    }
+#endif
 }
 
 CString GetAccountLabel(Account* acc, int i)

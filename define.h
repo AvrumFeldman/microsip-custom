@@ -64,12 +64,17 @@
 #define _GLOBAL_SETT_DENYINC_DEFAULT "button"
 #define _GLOBAL_SETT_AA_DEFAULT "button"
 
+#ifdef MICROSIP_AUDIO_ONLY
+#define _GLOBAL_MENU_WEBSITE "https://github.com/AvrumFeldman/microsip-custom"
+#define _GLOBAL_MENU_DOWNLOADS "https://github.com/AvrumFeldman/microsip-custom/releases"
+#define _GLOBAL_MENU_ISSUES "https://github.com/AvrumFeldman/microsip-custom/issues"
+#else
 #define _GLOBAL_MENU_WEBSITE "https://www.microsip.org/"
 #define _GLOBAL_MENU_DOWNLOADS "https://www.microsip.org/downloads"
 #define _GLOBAL_MENU_ISSUES "https://www.microsip.org/issues"
+#endif
 #define _GLOBAL_MENU_HELP "https://www.microsip.org/help"
 #define _GLOBAL_HELP_WEBSITE "https://www.microsip.org/help"
-#define _GLOBAL_URL_CHECK_VERSION "https://www.microsip.org/check-version?ver="
 #define _GLOBAL_TECH_DETAILS
 
 #define _GLOBAL_EC_DEFAULT "1"

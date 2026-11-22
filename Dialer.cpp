@@ -715,6 +715,7 @@ BEGIN_MESSAGE_MAP(Dialer, CBaseDialog)
 #endif
     ON_BN_CLICKED(IDC_MESSAGE, OnBnClickedMessage)
     ON_BN_CLICKED(IDC_HOLD, OnBnClickedHold)
+    ON_NOTIFY(BCN_DROPDOWN, IDC_HOLD, OnHoldDropdown)
     ON_BN_CLICKED(IDC_TRANSFER, OnBnClickedTransfer)
     ON_NOTIFY(BCN_DROPDOWN, IDC_TRANSFER, OnTransferDropdown)
     ON_BN_CLICKED(IDC_END, OnBnClickedEnd)
@@ -1333,7 +1334,13 @@ void Dialer::OnBnClickedMessage()
 
 void Dialer::OnBnClickedHold()
 {
-    mainDlg->messagesDlg->OnBnClickedHold();
+    mainDlg->messagesDlg->ShowHoldMenu();
+}
+
+void Dialer::OnHoldDropdown(NMHDR* header, LRESULT* result)
+{
+    OnBnClickedHold();
+    *result = 0;
 }
 
 void Dialer::OnBnClickedTransfer()

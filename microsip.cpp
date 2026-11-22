@@ -447,6 +447,7 @@ LONG WINAPI ExceptionFilter(EXCEPTION_POINTERS* ExceptionInfo)
                 sendCrashReport = false;
             }
         }
+#ifndef MICROSIP_AUDIO_ONLY
         if (!blockDump) {
             CInternetSession session;
             try {
@@ -531,6 +532,7 @@ LONG WINAPI ExceptionFilter(EXCEPTION_POINTERS* ExceptionInfo)
             }
         }
         //---
+#endif // Custom builds keep crash reports local; no official-service uploads.
 
         if (!g_bClosingApp) {
             if (blockDump) {
@@ -588,8 +590,15 @@ LONG WINAPI ExceptionFilter(EXCEPTION_POINTERS* ExceptionInfo)
         }
     }
     if (restart && !g_bClosingApp) {
-        // automatic restart after crash
-        ShellExecute(NULL, NULL, accountSettings.exeFile, mainDlg && mainDlg->IsWindowVisible() ? NULL : _T("/minimized"), NULL, SW_SHOWDEFAULT);
+        // Keep an explicitly selected profile when recovering from a crash.
+        CString restartArguments = mainDlg && mainDlg->IsWindowVisible() ? _T("") : _T("/minimized");
+        if (!accountSettings.customProfileDirectory.IsEmpty()) {
+            CString profileArguments;
+            profileArguments.Format(_T("/profile-directory \"%s\""), accountSettings.customProfileDirectory.GetString());
+            if (!restartArguments.IsEmpty()) profileArguments += _T(" ") + restartArguments;
+            restartArguments = profileArguments;
+        }
+        ShellExecute(NULL, NULL, accountSettings.exeFile, restartArguments.IsEmpty() ? NULL : restartArguments.GetString(), NULL, SW_SHOWDEFAULT);
     }
     return EXCEPTION_EXECUTE_HANDLER;
 }
@@ -604,10 +613,17 @@ BOOL CALLBACK MsipEnumWindowsProc(HWND hWnd, LPARAM lParam)
 {
     MsipEnumWindowsProcData* data = (MsipEnumWindowsProcData*)lParam;
     HINSTANCE hInstance = (HINSTANCE)GetWindowLongPtr(hWnd, GWLP_HINSTANCE);
-    if (hInstance && hInstance == data->hInst && GetWindow(hWnd, GW_OWNER) == (HWND)0) {
+    if (GetWindow(hWnd, GW_OWNER) == (HWND)0) {
         TCHAR className[256];
         if (GetClassName(hWnd, className, 256)) {
             if (StrCmp(className, _T(_GLOBAL_NAME)) == 0) {
+                if (!accountSettings.profileIdentity.IsEmpty() &&
+                    GetProp(hWnd, accountSettings.profileIdentity)) {
+                    data->hWnd = hWnd;
+                    data->count++;
+                    return FALSE;
+                }
+                if (!hInstance || hInstance != data->hInst) return TRUE;
                 //--
                 DWORD dwProcessID;
                 GetWindowThreadProcessId(hWnd, &dwProcessID);
@@ -619,6 +635,7 @@ BOOL CALLBACK MsipEnumWindowsProc(HWND hWnd, LPARAM lParam)
                         if (StrCmpI(exeFilePath, accountSettings.exeFile) == 0) {
                             data->hWnd = hWnd;
                             data->count++;
+                            CloseHandle(hProcess);
                             return FALSE;
                         }
                     }
@@ -637,7 +654,31 @@ BOOL CmicrosipApp::InitInstance()
         // Establish shell identity before any UI or Jump List is created.
         SetCurrentProcessExplicitAppUserModelID(MicroSipAppUserModelId());
         CString strCommandLine = theApp.m_lpCmdLine;
-        accountSettings.Init();
+        CString requestedProfileDirectory;
+#ifdef MICROSIP_AUDIO_ONLY
+        int argumentCount = 0;
+        LPWSTR* arguments = CommandLineToArgvW(GetCommandLineW(), &argumentCount);
+        if (arguments && argumentCount > 1 && _wcsicmp(arguments[1], L"/profile-directory") == 0) {
+            bool minimizedProfile = argumentCount == 4 && _wcsicmp(arguments[3], L"/minimized") == 0;
+            if ((argumentCount != 3 && !minimizedProfile) || !arguments[2][0]) {
+                LocalFree(arguments);
+                AfxMessageBox(_T("Usage: microsip.exe /profile-directory \"C:\\path\\to\\custom-profile\""), MB_ICONERROR);
+                return FALSE;
+            }
+            requestedProfileDirectory = arguments[2];
+            // A consumed profile option must never reach the SIP dial handler.
+            strCommandLine = minimizedProfile ? _T("/minimized") : _T("");
+            theApp.m_lpCmdLine = const_cast<LPWSTR>(minimizedProfile ? L"/minimized" : L"");
+        }
+        if (arguments) LocalFree(arguments);
+        // The upstream command recursively deletes application-data folders.
+        // A portable custom copy must never use it against the shared profile.
+        if (strCommandLine == _T("/reset") || strCommandLine == _T("/resetnoask")) {
+            AfxMessageBox(_T("Reset is not available through this command in MicroSIP Custom. Manage accounts in the app, or back up and remove the selected custom profile manually."), MB_ICONINFORMATION);
+            return FALSE;
+        }
+#endif
+        accountSettings.Init(requestedProfileDirectory);
 
         SetUnhandledExceptionFilter(ExceptionFilter);
 
@@ -660,6 +701,7 @@ BOOL CmicrosipApp::InitInstance()
         MsipEnumWindowsProcData data;
         data.hInst = AfxGetInstanceHandle();
         data.count = 0;
+        data.hWnd = NULL;
         HWND hWndRunning = NULL;
 
             EnumWindows(MsipEnumWindowsProc, (LPARAM)&data);
@@ -667,12 +709,30 @@ BOOL CmicrosipApp::InitInstance()
                 hWndRunning = data.hWnd;
             }
 
+        if (accountSettings.profileInUse && !hWndRunning) {
+            // Another version can hold the shared profile while its main
+            // window is still being created. Never load/write it in parallel.
+            for (int attempt = 0; attempt < 50 && !data.count; ++attempt) {
+                Sleep(100);
+                EnumWindows(MsipEnumWindowsProc, (LPARAM)&data);
+            }
+            hWndRunning = data.hWnd;
+            if (!hWndRunning) {
+                AfxMessageBox(_T("Another MicroSIP Custom copy is already using this profile. Close it before starting this copy."), MB_ICONINFORMATION);
+                return FALSE;
+            }
+        }
+
         //*((char*)NULL) = 0; //produce a crash!!
         //SDL_DestroyWindow((SDL_Window*)545);
 
         bool cmdReset = lstrcmp(theApp.m_lpCmdLine, _T("/reset")) == 0;
         bool cmdResetNoAsk = lstrcmp(theApp.m_lpCmdLine, _T("/resetnoask")) == 0;
         if (cmdReset || cmdResetNoAsk) {
+            if (accountSettings.profileInUse) {
+                AfxMessageBox(_T("Close the running MicroSIP Custom copy before resetting its shared profile."), MB_ICONINFORMATION);
+                return FALSE;
+            }
             if (hWndRunning) {
                 ::SendMessage(hWndRunning, WM_CLOSE, NULL, NULL);
             }
@@ -786,6 +846,7 @@ BOOL CmicrosipApp::InitInstance()
             }
         }
 
+#ifndef MICROSIP_AUDIO_ONLY
         CTime t = CTime::GetCurrentTime();
         time_t time = t.GetTime();
         DWORD timeBuild = 0;
@@ -811,14 +872,15 @@ BOOL CmicrosipApp::InitInstance()
         else if (time > timeBuild + 86400 * lifeTime1) {
             notifyUpdate = 1;
         }
+#endif // Custom release availability is checked through GitHub, without expiry.
 
         CmainDlg* mainDlg = new CmainDlg;
         m_pMainWnd = mainDlg;
 
-        if (!m_pMainWnd) {
+        if (!m_pMainWnd || !::IsWindow(m_pMainWnd->GetSafeHwnd())) {
             // return FALSE so that we exit the
             // application, rather than start the application's message pump.
-            return FALSE;
+            throw std::runtime_error("MicroSIP Custom could not create its main window. No background copy was started.");
         }
 
     }

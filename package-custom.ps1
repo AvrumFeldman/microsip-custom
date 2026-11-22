@@ -4,12 +4,21 @@
 # Requires PowerShell 7 and Git. Build and commit the release before packaging.
 param(
     [string]$BuildRoot = (Join-Path (Split-Path $PSScriptRoot) 'microsip-build'),
-    [string]$SourceRevision = 'HEAD'
+    [string]$SourceRevision = 'HEAD',
+    [string]$BinaryDirectory = (Join-Path $PSScriptRoot 'out')
 )
 $ErrorActionPreference = 'Stop'
 $pins = Get-Content -LiteralPath "$PSScriptRoot\config\dependencies.json" -Raw | ConvertFrom-Json
-$version = (Get-Item -LiteralPath "$PSScriptRoot\out\microsip.exe").VersionInfo.FileVersion
+$BinaryDirectory = [IO.Path]::GetFullPath($BinaryDirectory)
+$version = (Get-Item -LiteralPath (Join-Path $BinaryDirectory 'microsip.exe')).VersionInfo.FileVersion
 if ($version -notmatch '^\d+\.\d+\.\d+\.\d+$') { throw "Unexpected executable version: $version" }
+$versionDefinition = [regex]::Match((Get-Content -LiteralPath "$PSScriptRoot\const.h" -Raw), '#define _GLOBAL_VERSION "([0-9.]+)"')
+if (!$versionDefinition.Success -or $version -ne $versionDefinition.Groups[1].Value) {
+    throw 'The binary version does not match this custom source. Rebuild before packaging.'
+}
+if ($env:GITHUB_REF_TYPE -eq 'tag' -and $env:GITHUB_REF_NAME -ne "v$version") {
+    throw 'The release tag must match the custom binary version.'
+}
 function RunChecked([string]$exe, [string[]]$arguments) {
     & $exe @arguments
     if ($LASTEXITCODE) { throw "$exe failed ($LASTEXITCODE)" }
@@ -30,7 +39,7 @@ $dependencyStage = Join-Path $stage 'dependency-sources'
 $dist = Join-Path $PSScriptRoot 'dist'
 New-Item -ItemType Directory -Force -Path $package, "$package\licenses", $sourceStage, "$dependencyStage\downloads", $dist | Out-Null
 foreach ($file in @('microsip.exe', 'MicroSIPAudioGuard.exe')) {
-    Copy-Item -LiteralPath "$PSScriptRoot\out\$file" -Destination $package
+    Copy-Item -LiteralPath (Join-Path $BinaryDirectory $file) -Destination $package
 }
 foreach ($file in @('CUSTOM-BUILD.txt', 'README.md', 'LICENSE', 'COPYING', 'THIRD-PARTY-NOTICES.md', 'SOURCE-OFFER.txt', 'UPSTREAM-SOURCE.md')) {
     Copy-Item -LiteralPath (Join-Path $PSScriptRoot $file) -Destination $package
@@ -70,17 +79,9 @@ foreach ($notice in Get-ChildItem -LiteralPath "$pj\third_party" -Recurse -File)
     New-Item -ItemType Directory -Force -Path (Split-Path $destination) | Out-Null
     Copy-Item -LiteralPath $notice.FullName -Destination $destination
 }
-# This file is generated only from literal, account-free defaults.
-$defaults = @'
-[Global]
-version=3.22.16
-[Settings]
-callAudioMode=0
-callAudioApps=
-updatesInterval=never
-recordingFormat=wav
-'@
-Set-Content -LiteralPath "$package\microsip.ini" -Value $defaults -Encoding Unicode
+# Do not ship a live configuration filename. New builds initialize their own
+# account-free shared profile, and extracting over an existing custom copy
+# must never overwrite the user's microsip.ini or portable-mode marker.
 Set-Content -LiteralPath "$package\BUILD-REVISION.txt" -Value "$revision`n$version" -Encoding ascii
 
 function WriteChecksums([string]$directory) {

@@ -358,6 +358,11 @@ BOOL SettingsDlg::OnInitDialog()
     SetDlgItemText(IDC_SETTINGS_CALL_AUDIO_APPS, accountSettings.callAudioApps);
     OnCallAudioModeChanged();
     ((CButton*)GetDlgItem(IDC_SETTINGS_SINGLE_MODE))->SetCheck(accountSettings.singleMode);
+    combobox = (CComboBox*)GetDlgItem(IDC_SETTINGS_NEW_CALL_HOLD);
+    combobox->AddString(Translate(_T("When pressing Call")));
+    combobox->AddString(Translate(_T("When choosing New call")));
+    combobox->SetCurSel(accountSettings.holdOnNewCallEntry ? 1 : 0);
+    OnSingleCallModeChanged();
     ((CButton*)GetDlgItem(IDC_SETTINGS_ENABLE_LOG))->SetCheck(accountSettings.enableLog);
     ((CButton*)GetDlgItem(IDC_SETTINGS_BRING_TO_FRONT))->SetCheck(accountSettings.bringToFrontOnIncoming);
     ((CButton*)GetDlgItem(IDC_SETTINGS_ANSWER_BOX_RANDOM))->SetCheck(accountSettings.randomAnswerBox);
@@ -395,25 +400,7 @@ BOOL SettingsDlg::OnInitDialog()
         i = 1;
     }
     combobox->SetCurSel(i);
-    str.Empty();
-    CRegKey regKey;
-    CString rab;
-    LPTSTR ptr;
-    ULONG pnChars;
-    rab = _T("Software\\Microsoft\\Windows\\CurrentVersion\\Run");
-    if (regKey.Open(HKEY_CURRENT_USER, rab, KEY_READ) == ERROR_SUCCESS) {
-        ptr = str.GetBuffer(256);
-        pnChars = 256;
-        regKey.QueryStringValue(_T(_GLOBAL_NAME_NICE), ptr, &pnChars);
-        str.ReleaseBuffer();
-        regKey.Close();
-        str.MakeLower();
-        CString tmp = accountSettings.exeFile;
-        tmp.MakeLower();
-        if (str.Find(tmp) != -1) {
-            ((CButton*)GetDlgItem(IDC_SETTINGS_STARTUP))->SetCheck(1);
-        }
-    }
+    ((CButton*)GetDlgItem(IDC_SETTINGS_STARTUP))->SetCheck(msip_startup_enabled());
 
     return TRUE;
 }
@@ -431,6 +418,7 @@ void SettingsDlg::PostNcDestroy()
 }
 
 BEGIN_MESSAGE_MAP(SettingsDlg, CThemeDialog)
+    ON_BN_CLICKED(IDC_SETTINGS_SINGLE_MODE, &SettingsDlg::OnSingleCallModeChanged)
     ON_CBN_SELCHANGE(IDC_SETTINGS_CALL_AUDIO_MODE, &SettingsDlg::OnCallAudioModeChanged)
     ON_BN_CLICKED(IDC_SETTINGS_CALL_AUDIO_BROWSE, &SettingsDlg::OnBrowseCallAudioApp)
     ON_WM_CREATE()
@@ -652,6 +640,7 @@ LRESULT SettingsDlg::OnUpdateSettings(WPARAM wParam, LPARAM lParam)
     GetDlgItemText(IDC_SETTINGS_CALL_AUDIO_APPS, accountSettings.callAudioApps);
     accountSettings.callAudioApps.Trim();
     accountSettings.singleMode = ((CButton*)GetDlgItem(IDC_SETTINGS_SINGLE_MODE))->GetCheck();
+    accountSettings.holdOnNewCallEntry = ((CComboBox*)GetDlgItem(IDC_SETTINGS_NEW_CALL_HOLD))->GetCurSel() == 1;
     accountSettings.enableLog = ((CButton*)GetDlgItem(IDC_SETTINGS_ENABLE_LOG))->GetCheck();
     accountSettings.bringToFrontOnIncoming = ((CButton*)GetDlgItem(IDC_SETTINGS_BRING_TO_FRONT))->GetCheck();
     accountSettings.randomAnswerBox = ((CButton*)GetDlgItem(IDC_SETTINGS_ANSWER_BOX_RANDOM))->GetCheck();
@@ -688,7 +677,10 @@ LRESULT SettingsDlg::OnUpdateSettings(WPARAM wParam, LPARAM lParam)
         accountSettings.updatesInterval = _T("");
     }
 
-    msip_startup_set(((CButton*)GetDlgItem(IDC_SETTINGS_STARTUP))->GetCheck());
+    if (!msip_startup_set(((CButton*)GetDlgItem(IDC_SETTINGS_STARTUP))->GetCheck() != 0)) {
+        MessageBox(Translate(_T("Unable to update Windows startup.")),
+            _T(_GLOBAL_NAME_VISIBLE), MB_OK | MB_ICONERROR);
+    }
 
     accountSettings.SettingsSave();
 
@@ -705,6 +697,11 @@ LRESULT SettingsDlg::OnUpdateSettings(WPARAM wParam, LPARAM lParam)
     mainDlg->OnRecreate(0, 0);
     OnClose();
     return 0;
+}
+
+void SettingsDlg::OnSingleCallModeChanged()
+{
+    GetDlgItem(IDC_SETTINGS_NEW_CALL_HOLD)->EnableWindow(IsDlgButtonChecked(IDC_SETTINGS_SINGLE_MODE) == BST_CHECKED);
 }
 
 void SettingsDlg::OnBnClickedBrowse()

@@ -82,9 +82,10 @@ CString IniEncrypt(CString str)
     return res;
 }
 
-void AccountSettings::Init()
+void AccountSettings::Init(const CString& customProfileDirectory)
 {
     isPortable = false;
+    this->customProfileDirectory.Empty();
     firstRun = false;
     CString str;
     LPTSTR ptr;
@@ -125,6 +126,29 @@ void AccountSettings::Init()
     appDataLocal = appDataLocalRoot;
     appDataLocal.AppendFormat(_T("\\%s\\"), _T(_GLOBAL_NAME_NICE));
     if (pathRoaming.IsEmpty()) {
+#ifdef MICROSIP_AUDIO_ONLY
+        CustomProfile::Paths profile = CustomProfile::Resolve(exeFile.GetString(),
+            appDataRoamingRoot.GetString(), appDataLocalRoot.GetString(), customProfileDirectory.GetString());
+        isPortable = profile.portable;
+        profileInUse = profile.inUse;
+        profileIdentity = profile.identity.c_str();
+        profileLease = std::move(profile.lease);
+        if (!customProfileDirectory.IsEmpty()) {
+            this->customProfileDirectory = profile.roaming.c_str();
+            while (this->customProfileDirectory.GetLength() > 3 && this->customProfileDirectory.Right(1) == _T("\\")) {
+                this->customProfileDirectory.Delete(this->customProfileDirectory.GetLength() - 1);
+            }
+        }
+        pathRoaming = profile.roaming.c_str();
+        pathLocal = profile.local.c_str();
+        iniFile = profile.ini.c_str();
+        logFile = profile.log.c_str();
+        appDataRoaming = appDataRoamingRoot + _T("\\MicroSIP Custom\\");
+        appDataLocal = appDataLocalRoot + _T("\\MicroSIP Custom\\");
+        // The caller activates the existing profile owner. Do not load/save
+        // settings, migrate data, register accounts or alter startup meanwhile.
+        if (profileInUse) return;
+#else
         CString contactsFile = _T("Contacts.xml");
         CString pathInstaller;
         CRegKey regKey;
@@ -177,6 +201,7 @@ void AccountSettings::Init()
                 }
             }
         }
+#endif
         if (lstrcmp(AfxGetApp()->m_lpCmdLine, _T("/reset")) == 0) {
             return;
         }
@@ -233,6 +258,7 @@ void AccountSettings::Init()
             str.Format(_T("Failed to open file for writing %s"), iniFile);
             throw std::runtime_error(CW2A(str, CP_UTF8));
         }
+#ifndef MICROSIP_AUDIO_ONLY
         if (firstRun) {
             if (!isPortable) {
                 DWORD runAtSystemStartup = -1;
@@ -250,6 +276,7 @@ void AccountSettings::Init()
                 msip_startup_set(runAtSystemStartup != 0);
             }
         }
+#endif
     }
     //--
 
@@ -258,6 +285,10 @@ void AccountSettings::Init()
 
     //--
     section = _T("Global");
+
+#ifdef MICROSIP_AUDIO_ONLY
+    CustomProfile::InitializeUpdateChannel(iniFile.GetString());
+#endif
 
     ptr = str.GetBuffer(256);
     GetPrivateProfileString(section, _T("version"), NULL, ptr, 256, iniFile);
@@ -548,6 +579,7 @@ void AccountSettings::SettingsLoad(CString filename)
     GetPrivateProfileString(section, _T("singleMode"), _T("1"), ptr, 256, filename);
     str.ReleaseBuffer();
     singleMode = _wtoi(str);
+    holdOnNewCallEntry = GetPrivateProfileInt(section, _T("holdOnNewCallEntry"), 0, filename) == 1;
 
     ptr = ringtone.GetBuffer(256);
     GetPrivateProfileString(section, _T("ringingSound"), NULL, ptr, 256, filename);
@@ -688,6 +720,9 @@ void AccountSettings::SettingsLoad(CString filename)
         str = _T("Recordings");
     }
     else {
+#ifdef MICROSIP_AUDIO_ONLY
+        str = pathLocal + _T("Recordings");
+#else
         LPTSTR ptr1 = str.GetBuffer(MAX_PATH);
         SHGetSpecialFolderPath(
             0,
@@ -696,6 +731,7 @@ void AccountSettings::SettingsLoad(CString filename)
             FALSE);
         str.ReleaseBuffer();
         str.Append(_T("\\Recordings"));
+#endif
     }
     GetPrivateProfileString(section, _T("recordingPath"), str, ptr, 256, iniFileRec);
     recordingPath.ReleaseBuffer();
@@ -1115,6 +1151,7 @@ void AccountSettings::SettingsSave(CString filename)
     // save user settings
 
     WritePrivateProfileString(section, _T("singleMode"), singleMode ? _T("1") : _T("0"), filename);
+    WritePrivateProfileString(section, _T("holdOnNewCallEntry"), holdOnNewCallEntry ? _T("1") : _T("0"), filename);
     WritePrivateProfileString(section, _T("ringingSound"), ringtone, filename);
     str.Format(_T("%d"), volumeRing);
     WritePrivateProfileString(section, _T("volumeRing"), str, filename);

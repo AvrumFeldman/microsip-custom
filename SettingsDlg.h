@@ -50,6 +50,7 @@ public:
     afx_msg void OnClose();
     afx_msg void OnBnClickedCancel();
     afx_msg void OnBnClickedOk();
+    afx_msg void OnSingleCallModeChanged();
     afx_msg void OnCallAudioModeChanged();
     afx_msg void OnBrowseCallAudioApp();
     afx_msg LRESULT OnUpdateSettings(WPARAM wParam, LPARAM lParam);

@@ -49,6 +49,10 @@
 #include "Preview.h"
 #include "Transfer.h"
 #include "StatusBar.h"
+#include <memory>
+
+struct CustomUpdateUiState;
+namespace CustomUpdate { struct Release; }
 
 // CmainDlg dialog
 class CmainDlg : public CBaseDialog
@@ -63,6 +67,12 @@ public:
     bool audioRecoveryNoticeShown = false;
     volatile LONG audioFocusPrepareFailed = FALSE;
     void OnRestoreOtherAudio();
+    std::shared_ptr<CustomUpdateUiState> customUpdates;
+    bool installingCustomUpdate = false;
+    void OnTimerCustomUpdate();
+    bool HasCallsForUpdate();
+    void OfferCustomUpdate(const CustomUpdate::Release& release);
+    void ApplyCustomUpdate();
 
     // Dialog Data
     enum { IDD = IDD_MAIN };
@@ -152,6 +162,7 @@ public:
     void OnTimerCall();
     void OnTimerVersion();
     void OnTimerNetworkChange();
+    void OnTimerRegistrationRetry();
 
     void UsersDirectoryLoad(bool update = false);
     afx_msg LRESULT onUsersDirectoryLoaded(WPARAM wParam, LPARAM lParam);
@@ -185,6 +196,7 @@ private:
     HANDLE m_routeChangeHandle = nullptr;
 
     bool m_created = false;
+    bool m_registrationAuthErrorShown = false;
     void PJCreateRaw();
 
 protected:
@@ -279,12 +291,12 @@ public:
     afx_msg void OnTcnSelchangeTab(NMHDR* pNMHDR, LRESULT* pResult);
     afx_msg void OnTcnSelchangingTab(NMHDR* pNMHDR, LRESULT* pResult);
     afx_msg void OnMenuWebsite();
-    afx_msg void OnMenuHelp();
+    afx_msg void OnMenuAbout();
     afx_msg void OnMenuAddl();
     afx_msg void OnMuteInput();
     afx_msg void OnMuteOutput();
     afx_msg void OnCheckUpdates();
-    afx_msg void CheckUpdates();
+    void CheckUpdates(bool manual = false);
     afx_msg LRESULT OnUpdateCheckerLoaded(WPARAM wParam, LPARAM lParam);
 #ifdef _GLOBAL_VIDEO
     afx_msg void createPreviewWin();

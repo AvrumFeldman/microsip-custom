@@ -29,6 +29,7 @@ enum msip_action {
 	MSIP_ACTION_ATTENDED_TRANSFER,
 	MSIP_ACTION_INVITE,
 	MSIP_ACTION_FORWARD,
+	MSIP_ACTION_NEW_CALL,
 };
 
 class Transfer :
@@ -36,11 +37,12 @@ class Transfer :
 {
 private:
     void SetDropDownWidth(CComboBox& combo);
+    bool newCallSubmitted = false;
 public:
 	Transfer(CWnd* pParent = NULL);	// standard constructor
 	~Transfer();
 	enum { IDD = IDD_TRANSFER };
-	msip_action action;
+	msip_action action = MSIP_ACTION_TRANSFER;
 	pjsua_call_id callId;
 	CString callDialog;
 	void SetAction(msip_action action, pjsua_call_id call_id = PJSUA_INVALID_ID);

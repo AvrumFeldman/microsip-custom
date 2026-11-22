@@ -26,6 +26,8 @@
 #include "langpack.h"
 
 static const UINT_PTR kTransferHoldTimer = 0x4D534154;
+static const UINT_PTR kCallActivationTimer = 0x4D534143;
+static const UINT_PTR kNewCallTimer = 0x4D534E43;
 
 static DWORD CALLBACK MEditStreamOutCallback(DWORD_PTR dwCookie, LPBYTE pbBuff, LONG cb, LONG* pcb)
 {
@@ -195,7 +197,9 @@ BOOL MessagesDlg::OnInitDialog()
 
 void MessagesDlg::OnDestroy()
 {
+    ClearCallActivation();
     ClearAttendedTransfer();
+    ResetNewCall();
     //mainDlg->messagesDlg = nullptr;
     CBaseDialog::OnDestroy();
 }
@@ -680,7 +684,7 @@ BOOL MessagesDlg::CloseTab(int i, BOOL safe)
  * Deletes user_data if the call fails.
  * Warning: it may end other calls (close tabs and delete related objects)
  */
-pjsua_call_id MessagesDlg::PerformCall(CString number, bool hasVideo, pj_status_t* pStatus, call_user_data* user_data, bool consultation)
+pjsua_call_id MessagesDlg::PerformCall(CString number, bool hasVideo, pj_status_t* pStatus, call_user_data* user_data, bool preserveCalls)
 {
     pjsua_acc_id acc_id = PJSUA_INVALID_ID;
     pj_str_t pj_uri = {};
@@ -698,7 +702,7 @@ pjsua_call_id MessagesDlg::PerformCall(CString number, bool hasVideo, pj_status_
             }
             break;
         }
-        if (accountSettings.singleMode && !consultation) {
+        if (accountSettings.singleMode && !preserveCalls) {
             if (!user_data || (!user_data->inConference && !user_data->hidden)) {
                 msip_call_hangup_all_noincoming();
             }
@@ -774,7 +778,7 @@ pjsua_call_id MessagesDlg::PerformCall(CString number, bool hasVideo, pj_status_
  * Deletes user_data if the call fails.
  * Warning: it may end other calls, close tabs and delete related objects
  */
-MessagesContact* MessagesDlg::StartCall(bool hasVideo, call_user_data* user_data, bool consultation)
+MessagesContact* MessagesDlg::StartCall(bool hasVideo, call_user_data* user_data, bool preserveCalls)
 {
     MessagesContact* messagesContact = GetMessageContact();
     if (!messagesContact || messagesContact->callId != -1) {
@@ -812,7 +816,7 @@ MessagesContact* MessagesDlg::StartCall(bool hasVideo, call_user_data* user_data
     pj_status_t status = PJSIP_EINVALIDREQURI;
 
     CString address = messagesContact->aor + messagesContact->aorSuffix;
-    pjsua_call_id call_id = PerformCall(address, hasVideo, &status, user_data, consultation);
+    pjsua_call_id call_id = PerformCall(address, hasVideo, &status, user_data, preserveCalls);
     if (call_id != PJSUA_INVALID_ID) {
         messagesContact = nullptr;
         bool ok = false;
@@ -1126,6 +1130,15 @@ void MessagesDlg::OnEndCall(pjsua_call_info* call_info, call_user_data* user_dat
             OnGoToLastTab();
         }
     }
+    if (call_info->id == newCall.source && endedDialog == newCall.sourceDialog) {
+        ResetNewCall();
+        if (mainDlg->transferDlg && mainDlg->transferDlg->action == MSIP_ACTION_NEW_CALL) {
+            mainDlg->transferDlg->OnClose();
+        }
+    }
+    else if (call_info->id == newCall.target && endedDialog == newCall.targetDialog) {
+        ResetNewCall(true);
+    }
 }
 
 void MessagesDlg::UpdateCallButton(BOOL active, pjsua_call_info* call_info, call_user_data* user_data)
@@ -1157,7 +1170,7 @@ void MessagesDlg::UpdateCallButton(BOOL active, pjsua_call_info* call_info, call
     UpdateHoldButton(call_info);
     UpdateRecButton(user_data);
     if (!active) {
-        if (mainDlg->transferDlg) {
+        if (mainDlg->transferDlg && mainDlg->transferDlg->action != MSIP_ACTION_NEW_CALL) {
             mainDlg->transferDlg->OnClose();
         }
         ::SendMessage(m_hWnd, WM_CANCELMODE, 0, 0);
@@ -1222,13 +1235,11 @@ void MessagesDlg::UpdateHoldButton(pjsua_call_info* call_info)
     if (onHold) {
         buttonHold->SetCheck(TRUE);
         buttonHold->SetIcon(m_hIconResume);
-        buttonHoldDialer->SetCheck(TRUE);
         buttonHoldDialer->SetIcon(mainDlg->pageDialer->m_hIconResume);
     }
     else {
         buttonHold->SetCheck(FALSE);
         buttonHold->SetIcon(m_hIconHold);
-        buttonHoldDialer->SetCheck(FALSE);
         buttonHoldDialer->SetIcon(mainDlg->pageDialer->m_hIconHold);
     }
     //--
@@ -1595,6 +1606,9 @@ void MessagesDlg::Separate(pjsua_call_id call_id)
 
 bool MessagesDlg::CallAction(int action, CString number, pjsua_call_id action_call_id)
 {
+    if (NewCallInProgress() && action != MSIP_ACTION_FORWARD) {
+        return false;
+    }
     number.Trim();
     if (action == MSIP_ACTION_FORWARD) {
         if (action_call_id != PJSUA_INVALID_ID) {
@@ -1746,18 +1760,237 @@ bool MessagesDlg::CallAction(int action, CString number, pjsua_call_id action_ca
 
 void MessagesDlg::OnBnClickedHold()
 {
-    MessagesContact* messagesContact = GetMessageContact();
-    if (!messagesContact || messagesContact->callId == -1) {
+    MessagesContact* contact = GetMessageContact();
+    pjsua_call_info info;
+    if (activationTarget != PJSUA_INVALID_ID || NewCallInProgress() || !contact ||
+        !TransferCallInfo(contact->callId, contact->callIdStr, info) ||
+        info.state != PJSIP_INV_STATE_CONFIRMED) {
         return;
     }
-    pjsua_call_info call_info;
-    if (is_pjsua_running() && pjsua_call_get_info(messagesContact->callId, &call_info) == PJ_SUCCESS) {
-        if (call_info.state == PJSIP_INV_STATE_CONFIRMED) {
-            if (call_info.media_status == PJSUA_CALL_MEDIA_LOCAL_HOLD || call_info.media_status == PJSUA_CALL_MEDIA_NONE) {
-                msip_call_unhold(&call_info);
+    if (info.media_status == PJSUA_CALL_MEDIA_LOCAL_HOLD || info.media_status == PJSUA_CALL_MEDIA_NONE) {
+        if (accountSettings.singleMode && !HasAttendedTransfer()) {
+            BeginCallActivation(info.id, 0, false);
+        }
+        else {
+            msip_call_unhold(&info);
+        }
+    }
+    else {
+        msip_call_hold(&info);
+    }
+}
+
+void MessagesDlg::ShowHoldMenu()
+{
+    MessagesContact* contact = GetMessageContact();
+    pjsua_call_info info;
+    if (activationTarget != PJSUA_INVALID_ID || NewCallInProgress() || !contact ||
+        !TransferCallInfo(contact->callId, contact->callIdStr, info) ||
+        info.state != PJSIP_INV_STATE_CONFIRMED) {
+        return;
+    }
+    const pjsua_call_id sourceId = info.id;
+    const CString sourceDialog = MSIP::PjToStr(&info.call_id);
+    const bool held = info.media_status == PJSUA_CALL_MEDIA_LOCAL_HOLD || info.media_status == PJSUA_CALL_MEDIA_NONE;
+    enum : UINT { holdOrResume = 1, placeNewCall, firstSwitch };
+    CMenu menu;
+    if (!menu.CreatePopupMenu()) {
+        return;
+    }
+    menu.AppendMenu(MF_STRING, holdOrResume, Translate(held ? _T("Resume current call") : _T("Hold current call")));
+    menu.AppendMenu(MF_STRING | (CanStartNewCall(sourceId, sourceDialog) ? 0 : MF_GRAYED),
+        placeNewCall, Translate(_T("New call...")));
+
+    std::vector<std::pair<pjsua_call_id, CString>> targets;
+    if (!HasAttendedTransfer()) {
+        for (int i = 0; i < m_messagesTab.GetItemCount(); ++i) {
+            MessagesContact* other = GetMessageContact(i);
+            pjsua_call_info target;
+            if (other && other->callId != sourceId &&
+                TransferCallInfo(other->callId, other->callIdStr, target) && target.state == PJSIP_INV_STATE_CONFIRMED) {
+                CString label = other->name.IsEmpty() ? other->numberShort : other->name;
+                label.Replace(_T("&"), _T("&&"));
+                label = CString(Translate(_T("Switch to"))) + _T(" ") + label;
+                menu.AppendMenu(MF_STRING, firstSwitch + targets.size(), label);
+                targets.emplace_back(target.id, MSIP::PjToStr(&target.call_id));
             }
-            else {
-                msip_call_hold(&call_info);
+        }
+    }
+
+    CRect rect;
+    mainDlg->pageDialer->GetDlgItem(IDC_HOLD)->GetWindowRect(&rect);
+    const UINT selected = menu.TrackPopupMenu(TPM_RETURNCMD | TPM_NONOTIFY | TPM_RIGHTBUTTON,
+        rect.left, rect.bottom, this);
+    contact = GetMessageContact();
+    if (!selected || activationTarget != PJSUA_INVALID_ID || NewCallInProgress() || !contact || contact->callId != sourceId ||
+        !TransferCallInfo(sourceId, sourceDialog, info) || info.state != PJSIP_INV_STATE_CONFIRMED) {
+        return;
+    }
+    if (selected == placeNewCall) {
+        PromptNewCall(sourceId, sourceDialog);
+    }
+    else if (selected == holdOrResume) {
+        const bool stillHeld = info.media_status == PJSUA_CALL_MEDIA_LOCAL_HOLD || info.media_status == PJSUA_CALL_MEDIA_NONE;
+        if (stillHeld == held) {
+            OnBnClickedHold();
+        }
+    }
+    else if (!HasAttendedTransfer() && selected >= firstSwitch && selected - firstSwitch < targets.size()) {
+        pjsua_call_info target;
+        const auto& chosen = targets[selected - firstSwitch];
+        if (TransferCallInfo(chosen.first, chosen.second, target) && target.state == PJSIP_INV_STATE_CONFIRMED) {
+            BeginCallActivation(target.id, 0, false);
+        }
+    }
+}
+
+bool MessagesDlg::PrepareIncomingAnswer(pjsua_call_id call_id, int video)
+{
+    return BeginCallActivation(call_id, video, true);
+}
+
+void MessagesDlg::SelectCall(pjsua_call_info& info)
+{
+    for (int i = 0; i < m_messagesTab.GetItemCount(); ++i) {
+        MessagesContact* contact = GetMessageContact(i);
+        if (contact && contact->callId == info.id) {
+            LONG_PTR result;
+            OnTcnSelchangingTab(NULL, &result);
+            m_messagesTab.SetCurSel(i);
+            OnChangeTab(&info);
+            break;
+        }
+    }
+}
+
+void MessagesDlg::ClearCallActivation()
+{
+    KillTimer(kCallActivationTimer);
+    activationTarget = PJSUA_INVALID_ID;
+    activationDialog.Empty();
+    activationHeld.clear();
+}
+
+bool MessagesDlg::BeginCallActivation(pjsua_call_id call_id, int video, bool answer)
+{
+    if (activationTarget != PJSUA_INVALID_ID || !is_pjsua_running() ||
+        (NewCallInProgress() && (newCall.holdDeadline || !newCall.number.IsEmpty()))) {
+        return false;
+    }
+    pjsua_call_info target;
+    if (pjsua_call_get_info(call_id, &target) != PJ_SUCCESS) {
+        return false;
+    }
+    activationTarget = call_id;
+    activationDialog = MSIP::PjToStr(&target.call_id);
+    activationAnswer = answer;
+    activationVideo = video;
+    activationFailed = false;
+    activationResuming = false;
+    activationDeadline = GetTickCount64() + 35000;
+    pjsua_call_id calls[PJSUA_MAX_CALLS];
+    unsigned count = PJSUA_MAX_CALLS;
+    if (pjsua_enum_calls(calls, &count) != PJ_SUCCESS) {
+        ClearCallActivation();
+        return false;
+    }
+    for (unsigned i = 0; i < count; ++i) {
+        pjsua_call_info info;
+        if (calls[i] != call_id && pjsua_call_get_info(calls[i], &info) == PJ_SUCCESS &&
+            info.state == PJSIP_INV_STATE_CONFIRMED && info.media_status != PJSUA_CALL_MEDIA_LOCAL_HOLD) {
+            if (pjsua_call_set_hold(info.id, NULL) != PJ_SUCCESS) {
+                activationFailed = true;
+                break;
+            }
+            activationHeld.emplace_back(info.id, MSIP::PjToStr(&info.call_id));
+        }
+    }
+    if (activationHeld.empty() && !activationFailed) {
+        ClearCallActivation();
+        if (!answer) {
+            SelectCall(target);
+            msip_call_unhold(&target);
+        }
+        return true;
+    }
+    // Wait for hold acknowledgments before the new call can hear our microphone.
+    SetTimer(kCallActivationTimer, 100, NULL);
+    return false;
+}
+
+void MessagesDlg::PollCallActivation()
+{
+    pjsua_call_info target;
+    bool valid = TransferCallInfo(activationTarget, activationDialog, target);
+    if (valid && activationAnswer) {
+        valid = target.role == PJSIP_ROLE_UAS &&
+            (target.state == PJSIP_INV_STATE_INCOMING || target.state == PJSIP_INV_STATE_EARLY);
+    }
+    if (!valid) {
+        activationFailed = true;
+    }
+    if (activationResuming && !activationFailed) {
+        if (target.media_status == PJSUA_CALL_MEDIA_ACTIVE || target.media_status == PJSUA_CALL_MEDIA_REMOTE_HOLD) {
+            ClearCallActivation();
+            return;
+        }
+        if (GetTickCount64() < activationDeadline) {
+            return;
+        }
+        activationFailed = true;
+    }
+    bool held = true;
+    for (const auto& prior : activationHeld) {
+        pjsua_call_info info;
+        if (TransferCallInfo(prior.first, prior.second, info) && info.media_status != PJSUA_CALL_MEDIA_LOCAL_HOLD) {
+            held = false;
+        }
+    }
+    if (!held && GetTickCount64() < activationDeadline) {
+        return;
+    }
+    if (activationFailed || !held) {
+        pjsua_call_info previous;
+        bool resume = false;
+        for (const auto& prior : activationHeld) {
+            if (TransferCallInfo(prior.first, prior.second, previous)) {
+                resume = true;
+                break;
+            }
+        }
+        ClearCallActivation();
+        if (resume) {
+            SelectCall(previous);
+            msip_call_unhold(&previous);
+        }
+        if (valid) {
+            mainDlg->BaloonPopup(Translate(_T("Call waiting")),
+                Translate(_T("The call could not be activated. The previous call was restored when possible.")), NIIF_ERROR);
+        }
+        return;
+    }
+    bool answer = activationAnswer;
+    int video = activationVideo;
+    if (!answer) {
+        SelectCall(target);
+        activationResuming = true;
+        activationDeadline = GetTickCount64() + 35000;
+        // Preserve conference grouping when returning to a conference leg.
+        msip_call_unhold(&target);
+        return;
+    }
+    auto previousCalls = activationHeld;
+    ClearCallActivation();
+    // Run on this UI thread so the answer cannot remain queued beyond this
+    // dialog's lifetime. Keep the prior calls for immediate-failure rollback.
+    bool connected = mainDlg->onCallAnswer(WPARAM(target.id), LPARAM(video)) != 0;
+    if (!connected) {
+        for (const auto& prior : previousCalls) {
+            pjsua_call_info previous;
+            if (TransferCallInfo(prior.first, prior.second, previous)) {
+                SelectCall(previous);
+                msip_call_unhold(&previous);
+                break;
             }
         }
     }
@@ -1895,6 +2128,167 @@ bool MessagesDlg::TransferCallInfo(pjsua_call_id id, const CString& dialog, pjsu
         pjsua_call_get_info(id, &info) == PJ_SUCCESS && MSIP::PjToStr(&info.call_id) == dialog;
 }
 
+bool MessagesDlg::HasOtherUnheldCall(pjsua_call_id source)
+{
+    pjsua_call_id calls[PJSUA_MAX_CALLS];
+    unsigned count = PJSUA_MAX_CALLS;
+    if (pjsua_enum_calls(calls, &count) != PJ_SUCCESS) {
+        return true;
+    }
+    for (unsigned i = 0; i < count; ++i) {
+        pjsua_call_info info;
+        if (calls[i] == source || !pjsua_call_is_active(calls[i]) ||
+            pjsua_call_get_info(calls[i], &info) != PJ_SUCCESS ||
+            info.state == PJSIP_INV_STATE_NULL || info.state == PJSIP_INV_STATE_DISCONNECTED) {
+            continue;
+        }
+        bool unanswered = info.role == PJSIP_ROLE_UAS &&
+            (info.state == PJSIP_INV_STATE_INCOMING || info.state == PJSIP_INV_STATE_EARLY);
+        if (!unanswered && info.media_status != PJSUA_CALL_MEDIA_LOCAL_HOLD) {
+            return true;
+        }
+    }
+    return false;
+}
+
+bool MessagesDlg::CanUseNewCallSource(pjsua_call_id source, const CString& dialog, pjsua_call_info& info)
+{
+    return accountSettings.singleMode && !HasAttendedTransfer() && activationTarget == PJSUA_INVALID_ID &&
+        TransferCallInfo(source, dialog, info) && info.state == PJSIP_INV_STATE_CONFIRMED &&
+        !HasOtherUnheldCall(source);
+}
+
+bool MessagesDlg::CanStartNewCall(pjsua_call_id source, const CString& dialog)
+{
+    pjsua_call_info info;
+    return newCall.source == PJSUA_INVALID_ID && CanUseNewCallSource(source, dialog, info);
+}
+
+bool MessagesDlg::RequestNewCallHold(pjsua_call_info& source)
+{
+    if (newCall.holdDeadline || source.media_status == PJSUA_CALL_MEDIA_LOCAL_HOLD) {
+        return true;
+    }
+    if (pjsua_call_set_hold(source.id, nullptr) != PJ_SUCCESS) {
+        mainDlg->BaloonPopup(Translate(_T("New call")),
+            Translate(_T("The current call could not be put on hold.")), NIIF_ERROR);
+        return false;
+    }
+    newCall.resumeSource = true;
+    newCall.holdDeadline = GetTickCount64() + 35000;
+    SetTimer(kNewCallTimer, 100, nullptr);
+    return true;
+}
+
+void MessagesDlg::PromptNewCall(pjsua_call_id source, const CString& dialog)
+{
+    pjsua_call_info info;
+    if (newCall.source != PJSUA_INVALID_ID || !CanUseNewCallSource(source, dialog, info)) {
+        return;
+    }
+    newCall.source = source;
+    newCall.sourceDialog = dialog;
+    if (accountSettings.holdOnNewCallEntry && !RequestNewCallHold(info)) {
+        ResetNewCall();
+        return;
+    }
+    mainDlg->OpenTransferDlg(mainDlg, MSIP_ACTION_NEW_CALL, source);
+}
+
+bool MessagesDlg::SubmitNewCall(pjsua_call_id source, const CString& dialog, const CString& number)
+{
+    pjsua_call_info info;
+    if (!NewCallInProgress() || source != newCall.source || dialog != newCall.sourceDialog ||
+        !CanUseNewCallSource(source, dialog, info)) {
+        mainDlg->BaloonPopup(Translate(_T("New call")),
+            Translate(_T("The selected call is no longer available for hold.")), NIIF_ERROR);
+        return false;
+    }
+    if (!RequestNewCallHold(info)) {
+        return false;
+    }
+    newCall.number = number;
+    SetTimer(kNewCallTimer, 100, nullptr);
+    return true;
+}
+
+void MessagesDlg::CancelNewCall(pjsua_call_id source, const CString& dialog)
+{
+    if (!NewCallInProgress() || source != newCall.source || dialog != newCall.sourceDialog) {
+        return;
+    }
+    if (newCall.holdDeadline) {
+        // SIP requires the hold transaction to finish before we send a resume.
+        newCall.canceled = true;
+    }
+    else {
+        ResetNewCall(true);
+    }
+}
+
+void MessagesDlg::ResetNewCall(bool restoreSource)
+{
+    KillTimer(kNewCallTimer);
+    pjsua_call_info info;
+    bool resume = restoreSource && newCall.resumeSource && activationTarget == PJSUA_INVALID_ID &&
+        TransferCallInfo(newCall.source, newCall.sourceDialog, info) &&
+        info.media_status == PJSUA_CALL_MEDIA_LOCAL_HOLD && !HasOtherUnheldCall(info.id);
+    newCall = {};
+    if (resume) {
+        SelectCall(info);
+        msip_call_unhold(&info);
+    }
+}
+
+void MessagesDlg::PollNewCall()
+{
+    pjsua_call_info info;
+    bool valid = TransferCallInfo(newCall.source, newCall.sourceDialog, info) && info.state == PJSIP_INV_STATE_CONFIRMED;
+    bool held = valid && info.media_status == PJSUA_CALL_MEDIA_LOCAL_HOLD;
+    if (valid && !held && GetTickCount64() < newCall.holdDeadline) {
+        return;
+    }
+    KillTimer(kNewCallTimer);
+    newCall.holdDeadline = 0;
+    if (newCall.canceled) {
+        ResetNewCall(true);
+        return;
+    }
+    if (!held) {
+        ResetNewCall();
+        if (mainDlg->transferDlg && mainDlg->transferDlg->action == MSIP_ACTION_NEW_CALL) {
+            mainDlg->transferDlg->OnClose();
+        }
+        mainDlg->BaloonPopup(Translate(_T("New call")),
+            Translate(_T("The current call could not be put on hold.")), NIIF_ERROR);
+        return;
+    }
+    if (newCall.number.IsEmpty()) {
+        return;
+    }
+    CString number = newCall.number;
+    if (!CanUseNewCallSource(newCall.source, newCall.sourceDialog, info) || !mainDlg->MessagesOpen(number, true)) {
+        ResetNewCall(true);
+        return;
+    }
+    MessagesContact* contact = GetMessageContact();
+    if (!contact || contact->callId != PJSUA_INVALID_ID) {
+        mainDlg->BaloonPopup(Translate(_T("New call")),
+            Translate(_T("There is already an open call to this destination.")), NIIF_INFO);
+        ResetNewCall(true);
+        return;
+    }
+    // Use the regular outgoing call path while preserving the held SIP dialogs.
+    contact = StartCall(false, nullptr, true);
+    if (!contact) {
+        ResetNewCall(true);
+        return;
+    }
+    newCall.target = contact->callId;
+    newCall.targetDialog = contact->callIdStr;
+    mainDlg->pageDialer->DialedAdd(number);
+}
+
 void MessagesDlg::ClearAttendedTransfer()
 {
     KillTimer(kTransferHoldTimer);
@@ -1932,6 +2326,16 @@ bool MessagesDlg::StartAttendedTransfer(pjsua_call_id source, CString number)
 
 void MessagesDlg::OnTimer(UINT_PTR timer)
 {
+    if (timer == kNewCallTimer) {
+        if (NewCallInProgress()) {
+            PollNewCall();
+        }
+        return;
+    }
+    if (timer == kCallActivationTimer) {
+        PollCallActivation();
+        return;
+    }
     if (timer != kTransferHoldTimer) {
         CBaseDialog::OnTimer(timer);
         return;

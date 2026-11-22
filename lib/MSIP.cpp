@@ -74,16 +74,17 @@ void msip_audio_conf_set_volume(int val, bool mute)
     if (!is_pjsua_running()) {
         return;
     }
-    if (mute) {
-        val = 0;
-    }
+    // A linear amplitude slider leaves very little useful travel near silence.
+    // PJSIP's bridge uses 1/128 steps, so keep nonzero positions audible.
+    val = max(0, min(100, val));
+    int level = mute || val == 0 ? 0 : max(1, (val * val * 128 + 5000) / 10000);
     pjsua_call_id call_ids[PJSUA_MAX_CALLS];
     unsigned count = PJSUA_MAX_CALLS;
     if (pjsua_enum_calls(call_ids, &count) == PJ_SUCCESS) {
         for (unsigned i = 0; i < count; ++i) {
             pjsua_conf_port_id conf_port_id = pjsua_call_get_conf_port(call_ids[i]);
             if (conf_port_id != PJSUA_INVALID_ID) {
-                pjsua_conf_adjust_rx_level(conf_port_id, (float)val / 100);
+                pjsua_conf_adjust_rx_level(conf_port_id, (float)level / 128);
             }
         }
     }

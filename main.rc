@@ -2,6 +2,10 @@
 //
 #include "resource.h"
 
+#ifdef MICROSIP_AUDIO_ONLY
+IDR_CUSTOM_UPDATER RCDATA "updater\\Apply-Update.ps1"
+#endif
+
 #define APSTUDIO_READONLY_SYMBOLS
 /////////////////////////////////////////////////////////////////////////////
 //

@@ -3,9 +3,13 @@
 # Requires PowerShell 7, Git, Visual Studio 2022 C++/MFC/ATL and Windows SDK.
 param(
     [string]$BuildRoot = (Join-Path (Split-Path $PSScriptRoot) 'microsip-build'),
-    [switch]$SkipDependencies
+    [switch]$SkipDependencies,
+    [string]$OutputDirectory = (Join-Path $PSScriptRoot 'out')
 )
 $ErrorActionPreference = 'Stop'
+$OutputDirectory = [IO.Path]::GetFullPath($OutputDirectory)
+New-Item -ItemType Directory -Force -Path $OutputDirectory | Out-Null
+$applicationOut = $OutputDirectory.TrimEnd('\') + '\'
 $pins = Get-Content -LiteralPath "$PSScriptRoot\config\dependencies.json" -Raw | ConvertFrom-Json
 New-Item -ItemType Directory -Force -Path $BuildRoot | Out-Null
 $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
@@ -62,6 +66,6 @@ if (!(Test-Path $pjConfig) -or (Get-FileHash $sourceConfig).Hash -ne (Get-FileHa
 $env:INCLUDE = "$deps\include;$env:INCLUDE"
 $env:LIB = "$deps\lib;$env:LIB"
 RunChecked $msbuild @("$pj\pjsip-apps\build\libpjproject.vcxproj", '/m:4', '/p:Configuration=Release-Static', '/p:Platform=Win32', '/p:PlatformToolset=v143', '/p:BuildToolset=v143', '/p:WindowsTargetPlatformVersion=10.0', "/p:ForceImportBeforeCppTargets=$PSScriptRoot\config\dependency-paths.props", "/p:DependencyDir=$deps", '/v:minimal', '/nologo')
-RunChecked $msbuild @("$PSScriptRoot\audio\AudioGuard.vcxproj", '/m:4', '/p:Configuration=Release', '/p:Platform=Win32', '/v:minimal', '/nologo')
-RunChecked $msbuild @("$PSScriptRoot\custom.vcxproj", '/m:4', '/p:Configuration=Release', '/p:Platform=Win32', "/p:PjProjectDir=$pj", "/p:DependencyDir=$deps", '/v:minimal', '/nologo')
-Write-Output "Built $PSScriptRoot\out\microsip.exe"
+RunChecked $msbuild @("$PSScriptRoot\audio\AudioGuard.vcxproj", '/m:4', '/p:Configuration=Release', '/p:Platform=Win32', "/p:OutDir=$applicationOut", '/v:minimal', '/nologo')
+RunChecked $msbuild @("$PSScriptRoot\custom.vcxproj", '/m:4', '/p:Configuration=Release', '/p:Platform=Win32', "/p:OutDir=$applicationOut", "/p:PjProjectDir=$pj", "/p:DependencyDir=$deps", '/v:minimal', '/nologo')
+Write-Output "Built $OutputDirectory\microsip.exe"
